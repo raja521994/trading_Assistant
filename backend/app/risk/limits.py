@@ -30,6 +30,11 @@ class RiskConfig(BaseModel):
     slippage_bps: float = Field(5.0, ge=0, le=100)
     kill_switch: bool = False
     event_risk_policy: str = "warn"  # event data not connected -> always disclosed as UNKNOWN
+    # Evidence-based gates (BUY/SELL only when the data supports it; otherwise WAIT with the reason)
+    regime_filter: bool = True  # no new long daily setups while NIFTY 50 is below its 200-day average
+    require_oos_edge: bool = True  # strategy must show a walk-forward out-of-sample edge in the current regime
+    min_oos_profit_factor: float = Field(1.1, ge=0.5, le=5)
+    min_oos_trades: int = Field(30, ge=5, le=1000)
     costs: CostModel = Field(default_factory=CostModel)
 
 

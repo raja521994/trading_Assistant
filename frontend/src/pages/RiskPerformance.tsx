@@ -26,8 +26,10 @@ const RISK_FIELDS: [string, string][] = [
   ["max_drawdown_pct", "Max portfolio drawdown %"], ["max_open_positions", "Max open positions"], ["max_sector_exposure_pct", "Max sector exposure %"],
   ["max_alloc_per_instrument_pct", "Max allocation / instrument %"], ["max_leverage", "Max leverage (x)"], ["min_avg_turnover_cr", "Min avg turnover (₹ cr)"],
   ["min_risk_reward", "Min risk-reward"], ["min_score", "Min composite score"], ["slippage_bps", "Slippage (bps)"],
+  ["min_oos_profit_factor", "Min OOS profit factor (edge gate)"], ["min_oos_trades", "Min OOS trades (edge gate)"],
 ];
-const BOOL_FIELDS: [string, string][] = [["allow_overnight", "Allow overnight positions"], ["allow_intraday_short", "Allow intraday shorts"]];
+const BOOL_FIELDS: [string, string][] = [["allow_overnight", "Allow overnight positions"], ["allow_intraday_short", "Allow intraday shorts"],
+  ["regime_filter", "Regime gate: no new longs while NIFTY < 200-DMA"], ["require_oos_edge", "Edge gate: require walk-forward OOS edge"]];
 
 function RiskEditor() {
   const qc = useQueryClient();

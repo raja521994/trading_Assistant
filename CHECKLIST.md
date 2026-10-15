@@ -22,7 +22,9 @@ SIMULATED sample data. Status legend: ✅ done · 🟡 partial · ⬜ remaining.
 - ⬜ Upstox WebSocket streaming (currently REST polling every few seconds), option chain, fundamentals, news APIs
 - ✅ **Zerodha Kite Connect (default)** — official REST API, read-only: instruments, daily + 5m candles, quotes,
   in-app API-key/secret save and **Login with Zerodha** redirect flow (checksum token exchange), daily expiry handling
-- 🟡 Kite: verified against the real token endpoint; full live ingest requires the user's login + a plan with market data
+- ✅ Kite verified live: closes match the Kite app (official closing-auction price via quote), aligned 5m candles,
+  self-repair of misaligned bars, upsert of recent bars
+- ✅ Evidence-based gates (regime filter + walk-forward OOS edge per regime) and Market playbook
 - ⬜ KiteTicker WebSocket streaming, market depth, holdings/positions/orders read endpoints
 - ✅ Incremental ingestion (skips calls when data is current), validation (OHLC, duplicates, gaps vs exchange
   session calendar, staleness, sufficiency), coverage matrix

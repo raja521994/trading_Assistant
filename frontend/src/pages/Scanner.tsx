@@ -68,6 +68,29 @@ export default function Scanner() {
         </Panel>
       )}
 
+      {d?.playbook && (
+        <Panel title="Market playbook (evidence-based)" right={<DataLabel label={d.playbook.data_label} />}>
+          <div className={clsx("text-sm font-semibold", d.playbook.benchmark_above_200dma === false ? "text-amber-300" : "text-slate-100")}>{d.playbook.headline}</div>
+          <table className="tbl mt-2">
+            <thead><tr><th>Strategy</th><th className="text-right">OOS trades</th><th className="text-right">OOS PF</th><th className="text-right">OOS net</th><th className="text-right">NIFTY</th>
+              <th className="text-right">PF NIFTY&gt;200DMA</th><th className="text-right">PF NIFTY&lt;200DMA</th><th>Regime gate</th><th>Edge gate</th></tr></thead>
+            <tbody>{d.playbook.strategies.map((s) => (
+              <tr key={s.strategy} title={s.edge_detail}>
+                <td>{s.name} <span className="text-[10px] text-slate-500">{s.timeframe}</span></td>
+                <td className="num text-right">{s.oos_trades ?? "—"}</td>
+                <td className={clsx("num text-right", (s.oos_profit_factor ?? 0) >= 1 ? "text-up" : "text-down")}>{num(s.oos_profit_factor)}</td>
+                <td className="num text-right">{s.oos_net_return_pct === null ? "—" : `${num(s.oos_net_return_pct, 1)}%`}</td>
+                <td className="num text-right">{s.benchmark_return_pct === null ? "—" : `${num(s.benchmark_return_pct, 1)}%`}</td>
+                <td className="num text-right">{num(s.regime_split?.up?.profit_factor)} <span className="text-[10px] text-slate-500">({s.regime_split?.up?.num_trades ?? 0})</span></td>
+                <td className="num text-right">{num(s.regime_split?.down?.profit_factor)} <span className="text-[10px] text-slate-500">({s.regime_split?.down?.num_trades ?? 0})</span></td>
+                <td>{s.regime_gate ? <span className="text-up">pass</span> : <span className="text-amber-300">blocked</span>}</td>
+                <td>{s.edge_gate ? <span className="text-up">pass</span> : <span className="text-amber-300">blocked</span>}</td>
+              </tr>))}</tbody>
+          </table>
+          <div className="mt-1 text-[10px] text-slate-500">{d.playbook.note} Gates: regime filter {d.playbook.settings.regime_filter ? "on" : "off"}, OOS edge ≥ PF {d.playbook.settings.min_oos_profit_factor} over ≥ {d.playbook.settings.min_oos_trades} trades (change in Risk & Performance).</div>
+        </Panel>
+      )}
+
       {q.isLoading && <Loading what="Scanning universe" />}
       {q.error && <ErrorBox error={q.error} />}
       {d && d.notes.map((n, i) => <div key={i} className="rounded border border-ink-600 bg-ink-850 p-2 text-xs text-slate-400">{n}</div>)}

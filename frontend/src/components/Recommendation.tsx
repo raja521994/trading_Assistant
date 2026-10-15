@@ -101,6 +101,15 @@ export function RecommendationDetail({ rec, compact = false }: { rec: Recommenda
         <span className="font-semibold">Action rationale: </span>{rec.action_reasons.join("; ")}
         <div className="mt-1 text-[10px] text-amber-300/80">{rec.research_only_reason}</div>
       </div>
+      {rec.gates && (
+        <div className="flex flex-wrap gap-2 text-[11px]">
+          {Object.values(rec.gates).filter((g) => g.applies).map((g) => (
+            <span key={g.name} title={g.detail} className={clsx("rounded border px-1.5 py-0.5", g.passed ? "border-emerald-800 text-emerald-300" : "border-amber-700 text-amber-300")}>
+              {g.passed ? "✓" : "✕"} {g.name}
+            </span>
+          ))}
+        </div>
+      )}
 
       <div className={clsx("grid gap-3", compact ? "grid-cols-1" : "grid-cols-1 lg:grid-cols-3")}>
         <Section title="Trade plan">

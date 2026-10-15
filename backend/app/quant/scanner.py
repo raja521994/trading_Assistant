@@ -191,6 +191,13 @@ def build_recommendation(strat: Strategy, key: tuple[str, str], inst: Any, cand:
         if not action_reasons:
             action_reasons.append("All entry rules met, risk checks on sizing/liquidity passed, no major conflicts")
 
+    gates = evaluate_gates(strat, direction_code, evidence, regime, cfg)
+    if action in ("BUY", "SELL"):
+        failed = [g for g in gates.values() if g["applies"] and not g["passed"]]
+        if failed:
+            action = "WAIT"
+            action_reasons = [g["detail"] for g in failed] + [r for r in action_reasons if not r.startswith("All entry rules")]
+
     sig_ts = p.index[cand["signal_i"]]
     last_ts = p.index[last]
     if strat.intraday:
@@ -242,8 +249,80 @@ def build_recommendation(strat: Strategy, key: tuple[str, str], inst: Any, cand:
                                  else "Live order execution is disabled in this build - research and paper trading only"),
         "executable": False,
         "expires_at": pd.Timestamp(expires, unit="s", tz="UTC").tz_convert(IST).isoformat(),
-        "expires_at_epoch": expires, "data_quality": dq,
+        "expires_at_epoch": expires, "data_quality": dq, "gates": gates,
     }
+
+
+def benchmark_trend_up(regime: dict[str, Any] | None) -> bool | None:
+    facts = ((regime or {}).get("current") or {}).get("facts") or {}
+    c, s200 = facts.get("close"), facts.get("sma200")
+    return None if c is None or s200 is None else c > s200
+
+
+def evaluate_gates(strat: Strategy, direction: str, evidence: dict[str, Any] | None, regime: dict[str, Any] | None,
+                   cfg: RiskConfig) -> dict[str, dict[str, Any]]:
+    """Evidence-based gates. A BUY/SELL is only shown when (a) the market regime is one in which the strategy type
+    has worked and (b) the strategy has a walk-forward out-of-sample edge (in the current regime when enough trades)."""
+    up = benchmark_trend_up(regime)
+    facts = ((regime or {}).get("current") or {}).get("facts") or {}
+    long_daily = direction == "LONG" and not strat.intraday
+    regime_gate = {
+        "name": "Market regime", "applies": bool(cfg.regime_filter and long_daily),
+        "passed": up is not False,
+        "detail": (f"Market-regime filter: NIFTY 50 ({facts.get('close')}) is below its 200-day average "
+                   f"({facts.get('sma200')}); long setups are not taken in this regime (historically they lost money)")
+        if up is False else "NIFTY 50 above its 200-day average (or regime unknown)",
+    }
+    ev = evidence or {}
+    if not cfg.require_oos_edge:
+        edge = {"name": "Out-of-sample edge", "applies": False, "passed": True, "detail": "Gate disabled in settings"}
+    elif ev.get("status") != "ready":
+        edge = {"name": "Out-of-sample edge", "applies": True, "passed": False,
+                "detail": "Walk-forward evidence for this strategy is still being computed on the current data"}
+    else:
+        bucket = (ev.get("regime_split") or {}).get("up" if up else "down") if up is not None else None
+        if bucket and (bucket.get("num_trades") or 0) >= 20:
+            pf, n, scope = bucket.get("profit_factor"), bucket.get("num_trades"), \
+                f"when NIFTY is {'above' if up else 'below'} its 200-DMA"
+        else:
+            pf, n, scope = ev.get("profit_factor"), ev.get("num_trades") or 0, "overall"
+        ok = pf is not None and pf >= cfg.min_oos_profit_factor and n >= cfg.min_oos_trades
+        edge = {"name": "Out-of-sample edge", "applies": True, "passed": ok, "profit_factor": pf, "trades": n,
+                "scope": scope,
+                "detail": (f"Out-of-sample edge {scope}: profit factor {pf} over {n} trades "
+                           f"(needs >= {cfg.min_oos_profit_factor} over >= {cfg.min_oos_trades})")
+                if ok else
+                (f"No proven out-of-sample edge {scope}: profit factor {pf} over {n} walk-forward trades "
+                 f"(needs >= {cfg.min_oos_profit_factor} over >= {cfg.min_oos_trades})")}
+    return {"regime": regime_gate, "edge": edge}
+
+
+def build_playbook(regime: dict[str, Any] | None, evidence: dict[str, dict[str, Any]], cfg: RiskConfig,
+                   data_label: str) -> dict[str, Any]:
+    up = benchmark_trend_up(regime)
+    facts = ((regime or {}).get("current") or {}).get("facts") or {}
+    rows = []
+    for sid in all_strategy_ids():
+        strat = get_strategy(sid)
+        g = evaluate_gates(strat, "LONG", evidence.get(sid), regime, cfg)
+        ev = evidence.get(sid) or {}
+        rows.append({"strategy": sid, "name": strat.meta.name, "timeframe": strat.meta.timeframe,
+                     "oos_trades": ev.get("num_trades"), "oos_profit_factor": ev.get("profit_factor"),
+                     "oos_net_return_pct": ev.get("net_return_pct"), "benchmark_return_pct": ev.get("benchmark_return_pct"),
+                     "regime_split": ev.get("regime_split"), "regime_gate": g["regime"]["passed"] or not g["regime"]["applies"],
+                     "edge_gate": g["edge"]["passed"] or not g["edge"]["applies"], "edge_detail": g["edge"]["detail"]})
+    tradable = [r for r in rows if r["regime_gate"] and r["edge_gate"]]
+    if up is False and cfg.regime_filter:
+        headline = (f"Defensive: NIFTY 50 {facts.get('close')} is below its 200-day average {facts.get('sma200')}. "
+                    "Historically, long breakout/trend setups lost money in this regime - the scanner shows them as WAIT.")
+    elif not tradable:
+        headline = "No strategy currently shows a proven out-of-sample edge on this data - all setups are WAIT."
+    else:
+        headline = f"{len(tradable)} strateg{'y' if len(tradable) == 1 else 'ies'} pass the regime and edge gates."
+    return {"benchmark_above_200dma": up, "headline": headline, "strategies": rows, "data_label": data_label,
+            "settings": {"regime_filter": cfg.regime_filter, "require_oos_edge": cfg.require_oos_edge,
+                         "min_oos_profit_factor": cfg.min_oos_profit_factor, "min_oos_trades": cfg.min_oos_trades},
+            "note": "Gates are based on walk-forward out-of-sample results on the loaded data; they reduce, not remove, risk."}
 
 
 def _blocked(key: tuple[str, str], inst: Any, tf: str, dq: dict[str, Any], strategies: list[str]) -> dict[str, Any]:
@@ -316,6 +395,7 @@ def scan(session: Session, now: datetime | None = None) -> dict[str, Any]:
                              -r["score"]))
     return {"generated_at": now.isoformat(), "data_label": label, "provider": provider.name,
             "recommendations": recs, "blocked": list(blocked.values()), "notes": notes, "regime": regime,
+            "playbook": build_playbook(regime, evidence, cfg, label),
             "expected_last_bar": {k: (v.isoformat() if v else None) for k, v in exp.items()},
             "seconds": round(time.perf_counter() - t0, 2)}
 

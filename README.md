@@ -32,6 +32,29 @@ Zerodha resets access tokens daily (~06:00 IST): **log in again each trading day
 and falls back to clearly-labelled SIMULATED data until you do). The app never calls order APIs and never asks for
 your Kite password, PIN or TOTP.
 
+### Matching the Kite app exactly
+
+- NSE stocks trade continuously until **15:15**; the official close is set by the **closing-auction session** and
+  published ~15:45-16:00 IST. Kite's app shows that official close; Kite's historical candles only include it after
+  Zerodha's end-of-day update. The app therefore builds **today's daily bar from Kite's quote** (close = official close /
+  last price) and keeps re-fetching recent bars so provisional values are corrected. Charts show the quote as an
+  **LTP / Close (official)** line; the last 5-minute stock candle is 15:10 (continuous session).
+- 5-minute candles are always requested from exact 5-minute boundaries (Kite anchors candles to the `from` time);
+  any misaligned bar found in storage is removed automatically.
+
+### Evidence-based suggestions (gates)
+
+BUY/SELL is shown only when the data supports it; otherwise the setup is **WAIT** with the numeric reason:
+
+- **Regime gate** - no new long daily setups while NIFTY 50 is below its 200-day average. On the real data,
+  out-of-sample Donchian breakouts had profit factor 1.55 above vs 0.42 below the 200-DMA.
+- **Edge gate** - the strategy must have a walk-forward out-of-sample profit factor >= 1.1 over >= 30 trades **in the
+  current regime** (falls back to overall when a regime has < 20 trades).
+
+Both are configurable in Risk & Performance. The Scanner's **Market playbook** shows each strategy's OOS results split by
+regime and which gates pass. `backend/research/kite_analysis.py` reproduces the analysis
+(`cd backend; uv run python -m research.kite_analysis`).
+
 ## Optional other data sources (hidden in the UI)
 
 The code also contains read-only Upstox and Yahoo Finance adapters (`DATA_PROVIDER=upstox|yahoo`), not shown in the UI.
@@ -86,7 +109,7 @@ To reset all local state, stop the backend and delete `backend/var/`.
 ### Tests, typecheck, build
 
 ```powershell
-cd backend;  uv run pytest            # 85 tests: indicators, signal logic, sizing, risk limits, costs, backtest, API
+cd backend;  uv run pytest            # 92 tests: indicators, signal logic, sizing, risk limits, costs, backtest, API
 cd frontend; npm run typecheck        # tsc --noEmit
 cd frontend; npm run build            # production bundle in frontend/dist
 ```

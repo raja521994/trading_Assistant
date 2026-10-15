@@ -136,6 +136,7 @@ export interface Recommendation {
   executable: boolean;
   expires_at: string;
   data_quality: DataQuality;
+  gates?: Record<string, { name: string; applies: boolean; passed: boolean; detail: string }>;
 }
 
 export interface DataQuality {
@@ -175,7 +176,22 @@ export interface Regime {
   changes: string[];
 }
 
+export interface Playbook {
+  benchmark_above_200dma: boolean | null;
+  headline: string;
+  data_label: string;
+  note: string;
+  settings: { regime_filter: boolean; require_oos_edge: boolean; min_oos_profit_factor: number; min_oos_trades: number };
+  strategies: {
+    strategy: string; name: string; timeframe: string; oos_trades: number | null; oos_profit_factor: number | null;
+    oos_net_return_pct: number | null; benchmark_return_pct: number | null;
+    regime_split: Record<string, { num_trades: number; profit_factor: number | null; expectancy_r: number | null }> | null;
+    regime_gate: boolean; edge_gate: boolean; edge_detail: string;
+  }[];
+}
+
 export interface ScanResponse {
+  playbook?: Playbook;
   generated_at: string;
   data_label: string;
   recommendations: Recommendation[];

@@ -141,6 +141,7 @@ def compute_evidence(session: Session, strategy_ids: list[str] | None = None) ->
         wf = walk_forward(sid, data, cfg, folds=3, benchmark=bench if not strat.intraday else None)
         m = wf.get("oos_metrics") or {}
         last_bar = max(df.index[-1] for df in data.values())
+        regime_split = _regime_split(wf.get("oos_trades", []), bench) if bench is not None else {}
         summary = {
             "status": "ready" if "error" not in wf else "error", "strategy": sid, "version": strat.meta.version,
             "num_trades": m.get("num_trades", 0), "profit_factor": m.get("profit_factor"),
@@ -153,6 +154,7 @@ def compute_evidence(session: Session, strategy_ids: list[str] | None = None) ->
                 {"fold": f["fold"], "params": f["selected_params"], "oos": f["oos_metrics"], "is": f["is_metrics"]}
                 for f in wf.get("folds", [])],
             "error": wf.get("error"), "computed_at": int(time.time()), "method": wf.get("method"),
+            "regime_split": regime_split,
         }
         result = {"oos_equity": _curve(wf.get("oos_equity", pd.Series(dtype=float))),
                   "oos_trades": [t.to_dict() for t in wf.get("oos_trades", [])][-1000:]}
@@ -162,6 +164,30 @@ def compute_evidence(session: Session, strategy_ids: list[str] | None = None) ->
         out[sid] = summary
         log.info("walk-forward evidence %s: %s trades OOS in %.1fs", sid, summary["num_trades"],
                  time.perf_counter() - t0)
+    return out
+
+
+def _regime_split(trades: list, bench: pd.Series) -> dict[str, Any]:
+    """OOS trade statistics split by market regime at entry: NIFTY 50 above ('up') / below ('down') its 200-DMA."""
+    from ..quant import indicators as ind
+
+    sma = ind.sma(bench, 200)
+    up = (bench > sma).where(sma.notna())
+    out: dict[str, Any] = {}
+    buckets: dict[str, list] = {"up": [], "down": []}
+    for t in trades:
+        d = pd.Timestamp(t.entry_ts).normalize()
+        flag = up.asof(d) if len(up) and d >= up.index[0] else None
+        if flag is None or pd.isna(flag):
+            continue
+        buckets["up" if flag else "down"].append(t)
+    for k, ts in buckets.items():
+        pnl = [t.net_pnl for t in ts]
+        gains = sum(p for p in pnl if p > 0)
+        losses = -sum(p for p in pnl if p <= 0)
+        out[k] = {"num_trades": len(ts), "profit_factor": round(gains / losses, 3) if losses > 0 else None,
+                  "expectancy_r": round(sum(t.r_multiple for t in ts) / len(ts), 3) if ts else None,
+                  "net_pnl": round(sum(pnl), 2)}
     return out
 
 
@@ -181,6 +207,8 @@ def evidence_is_current(session: Session) -> bool:
     if set(ev) != set(all_strategy_ids()):
         return False
     for sid, s in ev.items():
+        if "regime_split" not in s:
+            return False  # computed by an older version without regime statistics
         data = load_universe(session, get_strategy(sid).meta.timeframe)
         if not data:
             continue
