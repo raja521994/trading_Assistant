@@ -66,6 +66,8 @@ def tick() -> None:
 
 
 def ingest_and_rescan() -> None:
+    if status["startup"] != "done":
+        return  # initial load still running (or failed and will be retried by a provider switch)
     with _lock, session_scope() as s:
         stats = ingest(s, active_provider())
         status["last_ingest"] = {**stats, "at": int(time.time())}
@@ -85,8 +87,35 @@ async def _loop(fn, every: float, name: str) -> None:  # noqa: ANN001
             _err(f"{name}: {type(exc).__name__}: {exc}")
 
 
+def initial_load() -> None:
+    """Startup ingest + scan, then walk-forward evidence/replay. Runs in a background thread so the API
+    is responsive immediately (live providers may need ~1 minute to download history)."""
+    try:
+        status["startup"] = "running"
+        startup_sync()
+    except Exception as exc:  # noqa: BLE001
+        log.exception("startup load failed")
+        status["startup"] = "error"
+        _err(f"startup: {type(exc).__name__}: {exc}")
+        return
+    evidence_job()
+
+
+def switch_provider() -> None:
+    """Called after credentials change: rebuild providers and reload everything for the new active provider."""
+    from ..data.repository import candle_store
+    from ..providers.registry import reset_providers
+    from ..signals import engine
+
+    reset_providers()
+    candle_store.invalidate()
+    engine.last_scan().clear()
+    status.update({"startup": "pending", "evidence": "pending", "last_scan": None})
+    threading.Thread(target=initial_load, name="provider-switch", daemon=True).start()
+
+
 def start_background(tasks: list[asyncio.Task]) -> None:
     s = get_settings()
-    threading.Thread(target=evidence_job, name="evidence", daemon=True).start()
+    threading.Thread(target=initial_load, name="initial-load", daemon=True).start()
     tasks.append(asyncio.create_task(_loop(tick, s.quote_refresh_seconds, "tick")))
     tasks.append(asyncio.create_task(_loop(ingest_and_rescan, s.ingest_refresh_seconds, "ingest")))

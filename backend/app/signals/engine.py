@@ -35,15 +35,23 @@ def last_scan() -> dict[str, Any]:
 
 
 def _uid(rec: dict[str, Any]) -> str:
-    base = f"{rec['strategy']}:{rec['exchange']}:{rec['symbol']}"
+    base = f"{rec.get('provider', 'sample')}:{rec['strategy']}:{rec['exchange']}:{rec['symbol']}"
     return f"{base}:watch:{rec['signal_bar_ts']}" if rec["state"] == WATCH else f"{base}:{rec['signal_bar_ts']}"
 
 
 def run_scan_and_persist(session: Session, now: datetime | None = None) -> dict[str, Any]:
     result = scan(session, now)
     now_epoch = int(time.time())
+    prov = result["provider"]
+    for other in session.scalars(select(Signal).where(Signal.state.in_(ACTIVE), Signal.origin == "live_scan",
+                                                      Signal.provider != prov)):
+        if other.state == TRIGGERED:
+            transition(session, other, EXITED, f"Data provider changed to {prov}; tracking stopped")
+            other.outcome = {"result": "untracked", "reason": "data provider changed"}
+        else:
+            transition(session, other, EXPIRED, f"Data provider changed to {prov}")
     active = {(s.strategy, s.exchange, s.symbol): s for s in session.scalars(
-        select(Signal).where(Signal.state.in_(ACTIVE), Signal.origin == "live_scan"))}
+        select(Signal).where(Signal.state.in_(ACTIVE), Signal.origin == "live_scan", Signal.provider == prov))}
     seen: set[tuple[str, str, str]] = set()
     created = updated = 0
     for rec in result["recommendations"]:
@@ -102,8 +110,8 @@ def update_signal_states(session: Session, now: datetime | None = None) -> int:
     now = now or now_ist()
     now_epoch = int(now.timestamp())
     changed = 0
-    sigs = session.scalars(select(Signal).where(Signal.state.in_([SETUP, TRIGGERED]),
-                                                Signal.origin == "live_scan")).all()
+    sigs = session.scalars(select(Signal).where(Signal.state.in_([SETUP, TRIGGERED]), Signal.origin == "live_scan",
+                                                Signal.provider == provider.name)).all()
     for sig in sigs:
         p = sig.payload
         q = provider.quote(sig.symbol, sig.exchange)

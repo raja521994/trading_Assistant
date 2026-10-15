@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..data.repository import list_instruments
 from ..providers.registry import active_provider, provider_fallback_reason
-from ..providers.sample import market_session_state, now_ist
+from ..providers.sample import now_ist
 from .regime import classify_regime
 from .universe import features, instrument_map, last_row, load_benchmark, load_universe
 
@@ -88,7 +88,7 @@ def market_overview(session: Session) -> dict[str, Any]:
     last_daily = max((df.index[-1] for df in daily.values()), default=None)
     return {
         "generated_at": now.isoformat(), "data_label": label, "provider": provider.name,
-        "provider_note": provider_fallback_reason(), "market_session": market_session_state(now),
+        "provider_note": provider_fallback_reason(), "market_session": provider.session_state(now),
         "indices": indices,
         "breadth": {"advances": adv, "declines": dec, "unchanged": unch, "total": len(rows),
                     "ad_ratio": round(adv / dec, 2) if dec else None},

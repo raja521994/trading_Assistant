@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from ..backtest.service import latest_evidence
 from ..data.validation import validate_candles
 from ..providers.registry import active_provider
-from ..providers.sample import market_session_state, now_ist
+from ..providers.sample import now_ist
 from ..risk.costs import product_for_mode, round_trip_costs
 from ..risk.limits import RiskConfig, load_risk_config
 from ..risk.sizing import position_size
@@ -219,7 +219,7 @@ def build_recommendation(strat: Strategy, key: tuple[str, str], inst: Any, cand:
         "generated_at": now.isoformat(), "data_timestamp": last_ts.isoformat(),
         "data_ts_epoch": int(last_ts.timestamp()), "signal_bar_ts": sig_ts.isoformat(),
         "freshness": {"status": dq.get("freshness"), "data_label": data_label, "quality": dq.get("status"),
-                      "market_session": market_session_state(now)},
+                      "market_session": active_provider().session_state(now)},
         "reference_price": round(close, 2),
         "direction": "bullish" if direction_code == "LONG" else "bearish" if direction_code == "SHORT" else "neutral",
         "direction_code": direction_code, "state": state, "action": action, "action_reasons": action_reasons,
@@ -273,6 +273,7 @@ def scan(session: Session, now: datetime | None = None) -> dict[str, Any]:
     if bench is not None and len(bench) > 64:
         bench_ret_63 = float(bench["close"].iloc[-1] / bench["close"].iloc[-64] - 1.0)
     regime = classify_regime(bench, daily) if bench is not None else None
+    calendar = set(bench.index.date) if bench is not None and len(bench) else None
     exp = {"1d": provider.expected_last_bar("1d", now), "5m": provider.expected_last_bar("5m", now)}
 
     dq_cache: dict[tuple[str, tuple[str, str]], dict[str, Any]] = {}
@@ -288,12 +289,13 @@ def scan(session: Session, now: datetime | None = None) -> dict[str, Any]:
             any_df = next(iter(data.values()))
             if not intraday_session_active(now, any_df.index[-1], str(strat.params.get("exit_time", "15:15"))):
                 notes.append(f"{strat.meta.name}: intraday scanner inactive outside the trading session "
-                             f"(market {market_session_state(now)}); no intraday setups are generated.")
+                             f"(market {provider.session_state(now)}); no intraday setups are generated.")
                 continue
         for key, df in data.items():
             ck = (tf, key)
             if ck not in dq_cache:
-                dq_cache[ck] = validate_candles(df, tf, exp[tf], now, min_bars=60).to_dict()
+                dq_cache[ck] = validate_candles(df, tf, exp[tf], now, min_bars=60,
+                                                calendar=calendar if tf == "1d" else None).to_dict()
             dq = dq_cache[ck]
             if not dq["ok"]:
                 b = blocked.setdefault(ck, _blocked(key, imap.get(key), tf, dq, []))
@@ -305,8 +307,10 @@ def scan(session: Session, now: datetime | None = None) -> dict[str, Any]:
             cand = evaluate_latest(strat, a)
             if cand is None:
                 continue
-            recs.append(build_recommendation(strat, key, imap.get(key), cand, p, a, daily_snaps.get(key, {}),
-                                             bench_ret_63, evidence.get(sid), cfg, weights, regime, dq, now, label))
+            rec = build_recommendation(strat, key, imap.get(key), cand, p, a, daily_snaps.get(key, {}),
+                                       bench_ret_63, evidence.get(sid), cfg, weights, regime, dq, now, label)
+            rec["provider"] = provider.name
+            recs.append(rec)
     order = {"BUY": 0, "SELL": 0, "WAIT": 1, "NO TRADE": 2}
     recs.sort(key=lambda r: (order.get(r["action"], 3), {"TRIGGERED": 0, "SETUP": 1, "WATCH": 2}[r["state"]],
                              -r["score"]))

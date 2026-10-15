@@ -90,7 +90,13 @@ export default function App() {
         <header className="border-b border-ink-700 bg-ink-900">
           {label === "SIMULATED" && (
             <div className="bg-amber-500/10 border-b border-amber-700/50 px-4 py-1 text-[11px] text-amber-200">
-              SIMULATED DATA — all prices are synthetic sample data, not real market data. Research and paper trading only; no orders are sent to any broker.
+              SIMULATED DATA — live data is not connected, so all prices are synthetic sample data. {" "}
+              <NavLink to="/integrations" className="underline font-semibold">Connect real-time Upstox data →</NavLink>
+            </div>
+          )}
+          {label !== "SIMULATED" && meta.data?.jobs.startup !== "done" && (
+            <div className="bg-sky-500/10 border-b border-sky-700/50 px-4 py-1 text-[11px] text-sky-200">
+              Loading live market history from {meta.data?.provider_name ?? "provider"}… pages fill in automatically (about a minute on first connect).
             </div>
           )}
           <nav className="lg:hidden flex overflow-x-auto border-b border-ink-700 px-2">

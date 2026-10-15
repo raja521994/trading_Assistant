@@ -6,15 +6,29 @@ assumptions → interpretation), sizes positions against configurable risk limit
 out-of-sample evaluation, and lets you **paper trade** signals and track outcomes.
 
 > **Not investment advice. No returns are guaranteed.** Live order execution is **disabled and not
-> implemented**. In the default configuration all market data is **SIMULATED** (synthetic, deterministic sample
-> data) and is labelled as such in every API response and on every page.
+> implemented**. Market data is **real-time from Upstox by default** (free, read-only Analytics Token). Until a
+> token is connected, the app shows **SIMULATED** sample data and labels it as such in every API response and on
+> every page.
 
 ```
 NSE/BSE + authorised providers ──► Market data & storage ──► Quant engine + AI research ──► Risk & signal validation ──► Dashboard
- (SampleProvider [SIMULATED]       (ingest, validation,        (indicators, YAML strategy     (sizing, limits, costs,       (React/TS/Vite,
-  | KiteProvider [read-only,        SQLite/Postgres,            specs, scanner, scoring,       state machine, WAIT /         Lightweight Charts,
-    disabled until keys exist])     coverage matrix)            regime, template explainer)    NO TRADE, paper broker)       SSE ticker)
+ (UpstoxProvider [LIVE, default]   (ingest, validation,        (indicators, YAML strategy     (sizing, limits, costs,       (React/TS/Vite,
+  | KiteProvider [read-only]        SQLite/Postgres,            specs, scanner, scoring,       state machine, WAIT /         Lightweight Charts,
+  | SampleProvider [SIMULATED])     coverage matrix)            regime, template explainer)    NO TRADE, paper broker)       SSE ticker)
 ```
+
+## Connect real-time data (Upstox — free, no delay)
+
+1. Have an Upstox account (free to open at upstox.com).
+2. Open <https://account.upstox.com/developer/apps#analytics> → **Analytics** tab → **Generate Token** → **Confirm**, and copy the token.
+3. In the dashboard go to **Data & Integrations → Live market data — Upstox**, paste the token and click **Connect**
+   (or put `UPSTOX_ACCESS_TOKEN=...` in `backend/.env` and restart the backend).
+
+The token is validated with one read-only quote call and stored **only on the server** (`backend/.env`, git-ignored);
+it is never returned to the browser or logged. The Analytics Token is valid for 1 year, needs no daily login, and is
+strictly **read-only** — it cannot place or modify orders. After connecting, the backend downloads ~3 years of daily
+bars and the last 30 days of 5-minute bars for the universe (about a minute), then polls real-time LTP quotes every
+few seconds and new 5-minute bars every minute. Exchange holidays come from the Upstox holiday API.
 
 ## Quick start (Windows / macOS / Linux)
 
@@ -34,8 +48,9 @@ npm run dev
 ```
 
 Open <http://127.0.0.1:5173>. On first start the backend creates `backend/var/trading.db` (SQLite, via Alembic
-migrations), ingests ~127k simulated bars (≈5 s), runs the first scan, and then computes walk-forward evidence and
-historical signal replay in a background thread (≈30 s; the header shows `Evidence: running → ready`).
+migrations) and, in a background thread, ingests history from the active provider, runs the first scan, then
+computes walk-forward evidence and historical signal replay (the header shows `Evidence: running → ready`).
+With sample data this takes ≈30 s; with Upstox ≈1–2 minutes on first connect.
 
 Optional configuration: copy `.env.example` to `.env` (repo root or `backend/`). All values are placeholders.
 To reset all local state, stop the backend and delete `backend/var/`.
@@ -43,7 +58,7 @@ To reset all local state, stop the backend and delete `backend/var/`.
 ### Tests, typecheck, build
 
 ```powershell
-cd backend;  uv run pytest            # 63 tests: indicators, signal logic, sizing, risk limits, costs, backtest, API
+cd backend;  uv run pytest            # 70 tests: indicators, signal logic, sizing, risk limits, costs, backtest, API
 cd frontend; npm run typecheck        # tsc --noEmit
 cd frontend; npm run build            # production bundle in frontend/dist
 ```
@@ -64,6 +79,7 @@ cd frontend; npm run build            # production bundle in frontend/dist
 | `GET/PUT /api/scoring/weights` | Transparent composite-score weights |
 | `POST /api/assistant/ask` | AI research assistant (retrieval + calculations, no invented data) |
 | `GET /api/integrations` | Provider status, capabilities, coverage matrix, not-connected list |
+| `POST/DELETE /api/integrations/upstox/token` | Validate + store (server-side) / remove the Upstox Analytics Token and switch provider |
 | `GET /api/stream` | Server-sent events: index quotes, session, job status |
 
 ## What is implemented
@@ -100,14 +116,15 @@ is rejected (falls back to the deterministic interpretation). The AI cannot plac
 
 | Provider | Status in this build | Needs verification before use |
 |---|---|---|
-| **SampleProvider** | Active by default. 42 equities (37 NSE, 5 BSE) + 10 indices; daily bars from 2023-01-02 and 5-minute bars for the last 20 sessions; simulated intraday quotes during 09:15–15:30 IST. **SIMULATED.** | n/a — synthetic, weekday calendar (no exchange holidays). |
-| **Zerodha Kite Connect** (`backend/app/providers/kite.py`) | Implemented against the official `kiteconnect` SDK interface (instruments, historical candles with chunking, quotes, rate limiting, retries, health). **Read-only; disabled** until `uv sync --extra kite` and `KITE_API_KEY` + `KITE_ACCESS_TOKEN` are set and `DATA_PROVIDER=kite`. **Not yet tested against the live API.** | Paid Kite Connect app; historical-data add-on and per-interval lookback limits; BSE/index coverage in the instrument master; quote fields & rate limits; KiteTicker WebSocket limits and depth permissions; exchange data-redistribution terms. Access tokens must be generated daily via the official login redirect — never enter your password/PIN/TOTP in this app. |
+| **Upstox** (`backend/app/providers/upstox.py`) — **default** | Real-time, read-only via the free Analytics Token: instrument master (public BOD JSON), daily candles (V3, from 2023), 5-minute candles (last 30 days + today's completed bars), batched LTP quotes (V3, ≤500 keys/call), market holidays. Rate-limited to 8 req/s (Upstox limit 50/s, 500/min). Universe: NIFTY 50-style list (configurable `UPSTOX_UNIVERSE`) + 10 indices. Unit-tested with a mocked HTTP transport; token rejection verified against the real API. | Universe is static (not auto-synced with index rebalances); candles not adjusted here for corporate actions; WebSocket streaming, option chain, fundamentals and news APIs exist at Upstox but are not wired yet; redistribution terms if shared beyond personal use. |
+| **SampleProvider** | Used only when no live credentials are configured (or `DATA_PROVIDER=sample`). 42 equities + 10 indices, deterministic. **SIMULATED.** | n/a — synthetic, weekday calendar. |
+| **Zerodha Kite Connect** (`backend/app/providers/kite.py`) | Implemented against the official `kiteconnect` SDK interface (instruments, historical candles with chunking, quotes, rate limiting, retries, health). **Read-only; disabled** until `uv sync --extra kite`, `KITE_API_KEY` + `KITE_ACCESS_TOKEN` and `DATA_PROVIDER=kite`. **Not yet tested against the live API.** | Paid Kite Connect app; historical-data add-on and lookback limits; daily access token via the official login redirect — never enter your password/PIN/TOTP in this app. |
 | Fundamentals, corporate actions, news, F&O (OI/IV/Greeks/option chain), broker holdings | **Not connected** — shown as such in the UI; no placeholder buttons. | Choose licensed providers; evaluate data rights per provider. |
 
 ## Configuration
 
 See `.env.example`. Key settings: `DATABASE_URL` (default SQLite under `backend/var/`; Postgres via
-`docker-compose.yml` + `psycopg`), `DATA_PROVIDER` (`sample`/`kite`), `SAMPLE_*`, `KITE_*`, `LLM_*`,
+`docker-compose.yml` + `psycopg`), `DATA_PROVIDER` (`upstox` default / `kite` / `sample`), `UPSTOX_*`, `SAMPLE_*`, `KITE_*`, `LLM_*`,
 `BACKGROUND_JOBS`, `QUOTE_REFRESH_SECONDS`. Risk limits, cost-model rates and score weights are edited in the UI
 (Risk & Performance page) and stored in the database with audit-log entries.
 
@@ -123,10 +140,11 @@ See `.env.example`. Key settings: `DATABASE_URL` (default SQLite under `backend/
 
 ## Limitations (read before trusting any number)
 
-- Sample data is synthetic; backtests, walk-forward evidence and paper P&L on it say **nothing** about real markets.
+- Sample data (used only when live data is not connected) is synthetic; results on it say **nothing** about real markets.
+- Even on real data, a backtest/walk-forward result is not a promise of future performance.
 - Universe = instruments the provider currently lists (survivorship bias); no corporate-action adjustment.
 - Cost-model rates are estimates (verify at zerodha.com/charges); income tax on gains is excluded.
-- Weekday calendar only; exchange holidays are not modelled (validation flags such gaps as possible holidays).
+- Exchange holidays come from Upstox (current year); historical gap checks use the NIFTY 50 bar dates as the session calendar.
 - The composite score is a ranking, not a calibrated probability.
 - The intraday (ORB) scanner only produces setups during the trading session (until 15:15 IST).
 

@@ -27,7 +27,9 @@ class DataQuality:
 
 
 def validate_candles(df: pd.DataFrame, timeframe: str, expected_last: datetime | None, now: datetime | None = None,
-                     min_bars: int = 60, window: int = 250) -> DataQuality:
+                     min_bars: int = 60, window: int = 250, calendar: set | None = None) -> DataQuality:
+    """`calendar`: optional set of exchange session dates (e.g. the benchmark index's bar dates) used for
+    daily gap detection so exchange holidays are not reported as missing bars."""
     if df is None or df.empty:
         return DataQuality(False, "EMPTY", "UNKNOWN", 0, None, _iso(expected_last), issues=["No candles available"])
     issues: list[str] = []
@@ -45,12 +47,16 @@ def validate_candles(df: pd.DataFrame, timeframe: str, expected_last: datetime |
 
     missing = 0
     if timeframe == "1d":
-        expected_days = pd.bdate_range(recent.index[0].date(), recent.index[-1].date())
+        lo_d, hi_d = recent.index[0].date(), recent.index[-1].date()
+        if calendar:
+            expected_days = [d for d in calendar if lo_d <= d <= hi_d]
+        else:
+            expected_days = [d.date() for d in pd.bdate_range(lo_d, hi_d)]
         present = {d.date() for d in recent.index}
-        missing = sum(1 for d in expected_days if d.date() not in present)
+        missing = sum(1 for d in expected_days if d not in present)
         if missing:
-            issues.append(f"{missing} missing weekday session(s) in the last {len(recent)} bars "
-                          "(may be exchange holidays — holiday calendar not modelled)")
+            issues.append(f"{missing} missing session(s) in the last {len(recent)} bars"
+                          + ("" if calendar else " (may be exchange holidays - no exchange calendar supplied)"))
     else:
         counts = recent.groupby(recent.index.date).size()
         complete = counts.iloc[:-1] if len(counts) > 1 else counts.iloc[0:0]

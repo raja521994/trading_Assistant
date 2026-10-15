@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from ..backtest.service import latest_evidence
 from ..config import get_settings
 from ..models import Signal
+from ..providers.registry import active_provider
 from ..quant.regime import classify_regime
 from ..quant.strategies.base import load_specs
 from ..quant.universe import instrument_map, load_benchmark, load_universe
@@ -79,7 +80,8 @@ def _signal_for(session: Session, symbol: str | None, signal_id: int | None) -> 
         return session.get(Signal, signal_id)
     if symbol is None:
         return None
-    sigs = session.scalars(select(Signal).where(Signal.symbol == symbol, Signal.origin == "live_scan")
+    sigs = session.scalars(select(Signal).where(Signal.symbol == symbol, Signal.origin == "live_scan",
+                                               Signal.provider == active_provider().name)
                            .order_by(Signal.updated_at.desc())).all()
     active = [s for s in sigs if s.state in ACTIVE]
     pick = active or sigs

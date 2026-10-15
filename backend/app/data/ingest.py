@@ -67,12 +67,16 @@ def ingest(session: Session, provider: MarketDataProvider, timeframes: tuple[str
     caps = provider.capabilities()
     inserted = 0
     errors: list[str] = []
+    expected = {tf: provider.expected_last_bar(tf) for tf in timeframes if tf in caps.timeframes}
     for (exchange, symbol), inst in instruments.items():
         for tf in timeframes:
             if tf not in caps.timeframes:
                 continue
             last = session.scalar(select(func.max(Candle.ts)).where(Candle.instrument_id == inst.id,
                                                                      Candle.timeframe == tf))
+            exp = expected.get(tf)
+            if last is not None and exp is not None and last >= int(pd.Timestamp(exp).timestamp()):
+                continue  # already up to date; no provider call needed
             start = pd.Timestamp(last + 1, unit="s", tz="UTC") if last is not None else None
             try:
                 df = provider.candles(symbol, exchange, tf, start=start)

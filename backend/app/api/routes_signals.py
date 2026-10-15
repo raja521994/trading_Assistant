@@ -12,9 +12,10 @@ from sqlalchemy.orm import Session
 from ..ai.template_explainer import explain_recommendation
 from ..backtest.service import latest_evidence
 from ..db import get_db
-from ..jobs.scheduler import _lock
+from ..jobs.scheduler import _lock, status as job_status
 from ..models import PaperTrade, Signal, SignalEvent
 from ..paper.broker import audit, portfolio_state
+from ..providers.registry import active_provider
 from ..quant.scoring import COMPONENT_INFO, DEFAULT_WEIGHTS, load_weights, save_weights
 from ..quant.strategies.base import all_strategy_ids, get_strategy, load_specs
 from ..risk.limits import RiskConfig, TradeProposal, check_trade, load_risk_config, save_risk_config
@@ -28,6 +29,11 @@ router = APIRouter(prefix="/api")
 def _ensure_scan(db: Session) -> dict[str, Any]:
     r = last_scan()
     if not r:
+        if job_status["startup"] != "done":
+            return {"generated_at": None, "data_label": active_provider().capabilities().data_status.value,
+                    "provider": active_provider().name, "recommendations": [], "blocked": [], "regime": None,
+                    "notes": ["Initial market-data load in progress - the scanner will populate automatically."],
+                    "expected_last_bar": {}, "seconds": 0}
         with _lock:
             r = run_scan_and_persist(db)
             db.commit()
@@ -85,7 +91,7 @@ def _sig_brief(s: Signal) -> dict[str, Any]:
 @router.get("/signals")
 def signals(state: str | None = None, origin: str | None = None, symbol: str | None = None,
             limit: int = Query(200, ge=1, le=2000), db: Session = Depends(get_db)) -> list[dict[str, Any]]:
-    q = select(Signal)
+    q = select(Signal).where(Signal.provider == active_provider().name)
     if state:
         q = q.where(Signal.state == state)
     if origin:

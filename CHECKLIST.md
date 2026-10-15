@@ -13,12 +13,18 @@ SIMULATED sample data. Status legend: ✅ done · 🟡 partial · ⬜ remaining.
 
 ## Market data (Phase 2 — partially in scope)
 - ✅ Provider-independent `MarketDataProvider` interface with explicit capabilities / health
+- ✅ **Upstox real-time provider (default)** via free read-only Analytics Token: instrument master, daily + 5m candles,
+  batched LTP quotes, holiday calendar, rate limiting, retries, health; in-app token connect (stored server-side only)
+- 🟡 Upstox: verified against the real API for token validation/rejection; full live ingest needs the user's token
+- ⬜ Upstox WebSocket streaming (currently REST polling every few seconds), option chain, fundamentals, news APIs
 - 🟡 Zerodha Kite Connect adapter (read-only: instruments, historical candles, quotes, rate limiting, retries) —
   implemented against the official SDK interface, **disabled and untested** until credentials exist
 - ⬜ KiteTicker WebSocket streaming, market depth, holdings/positions/orders read endpoints
 - ⬜ Kite login redirect helper (request_token → access_token) inside the app
-- ✅ Incremental ingestion, data validation (OHLC, duplicates, gaps, staleness, sufficiency), coverage matrix
-- ⬜ Exchange holiday calendar, corporate-action adjustment, delisted instruments (survivorship bias)
+- ✅ Incremental ingestion (skips calls when data is current), validation (OHLC, duplicates, gaps vs exchange
+  session calendar, staleness, sufficiency), coverage matrix
+- ✅ Live and sample signals kept separate (signals tagged by provider; switching providers retires old active signals)
+- ⬜ Corporate-action adjustment, delisted instruments (survivorship bias), auto-sync of index constituents
 
 ## Quant engine (Phase 3)
 - ✅ Indicators: SMA, EMA, RSI, MACD, Bollinger, ATR, ADX/DI, VWAP, Supertrend, Donchian (+ reference tests)

@@ -42,6 +42,7 @@ class Signal(Base):
     __tablename__ = "signals"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     uid: Mapped[str] = mapped_column(String(160), unique=True)
+    provider: Mapped[str] = mapped_column(String(32), default="sample", server_default="sample", index=True)
     origin: Mapped[str] = mapped_column(String(24), default="live_scan")
     symbol: Mapped[str] = mapped_column(String(64), index=True)
     exchange: Mapped[str] = mapped_column(String(8))

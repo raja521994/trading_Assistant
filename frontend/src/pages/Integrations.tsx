@@ -1,5 +1,6 @@
 import clsx from "clsx";
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { istTime, num } from "../lib/format";
 import { DataLabel, ErrorBox, Loading, NotConnected, Panel, Pill } from "../components/ui";
@@ -24,6 +25,45 @@ interface Integrations {
 
 const CAP_FLAGS = ["supports_quotes", "supports_streaming", "supports_depth", "supports_oi", "supports_option_chain", "supports_fundamentals", "supports_corporate_actions", "supports_news", "supports_orders"];
 
+function UpstoxConnect({ provider }: { provider?: Provider }) {
+  const qc = useQueryClient();
+  const [token, setToken] = useState("");
+  const save = useMutation({
+    mutationFn: () => api.post<{ message: string; token_hint: string }>("/integrations/upstox/token", { token }),
+    onSuccess: () => { setToken(""); qc.invalidateQueries(); },
+  });
+  const remove = useMutation({ mutationFn: () => api.delete("/integrations/upstox/token"), onSuccess: () => qc.invalidateQueries() });
+  const connected = !!provider?.enabled;
+  return (
+    <Panel title="Live market data — Upstox (real-time, read-only)" right={<DataLabel label={connected ? (provider?.health.connected ? "LIVE" : "UNAVAILABLE") : "UNAVAILABLE"} />}>
+      {connected ? (
+        <div className="space-y-2 text-xs">
+          <div className={provider?.health.connected ? "text-emerald-300" : "text-red-300"}>{provider?.health.message}</div>
+          <div className="text-slate-400">The token is stored only on the server (backend/.env). It is read-only and cannot place orders.</div>
+          <button className="btn btn-danger" disabled={remove.isPending} onClick={() => remove.mutate()}>Disconnect (switch back to SIMULATED data)</button>
+        </div>
+      ) : (
+        <div className="space-y-3 text-xs">
+          <div className="text-slate-300">Real-time NSE/BSE prices, candles and holidays via Upstox's free, read-only <b>Analytics Token</b> (valid 1 year, no daily login, cannot trade).</div>
+          <ol className="list-decimal pl-4 space-y-1 text-slate-300">
+            <li>Open a free Upstox account if you don't have one (<a className="text-sky-300 underline" href="https://upstox.com/open-demat-account/" target="_blank" rel="noreferrer">upstox.com</a>).</li>
+            <li>Go to <a className="text-sky-300 underline" href="https://account.upstox.com/developer/apps#analytics" target="_blank" rel="noreferrer">account.upstox.com/developer/apps → Analytics</a>.</li>
+            <li>Click <b>Generate Token</b> → <b>Confirm</b>, then copy the full token.</li>
+            <li>Paste it below and click Connect. It is validated with one read-only quote call, then stored server-side only.</li>
+          </ol>
+          <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
+            <input className="input flex-1" type="password" autoComplete="off" placeholder="Paste Upstox Analytics Token" value={token} onChange={(e) => setToken(e.target.value)} />
+            <button className="btn btn-primary" disabled={token.trim().length < 20 || save.isPending}>{save.isPending ? "Validating…" : "Connect"}</button>
+          </form>
+          {save.error && <ErrorBox error={save.error} />}
+          {save.isSuccess && <div className="text-emerald-300">{save.data.message}</div>}
+          <div className="text-[10px] text-slate-500">Never share this token. Your Upstox password/PIN/TOTP is never requested by this app.</div>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 export default function IntegrationsPage() {
   const q = useQuery({ queryKey: ["integrations"], queryFn: () => api.get<Integrations>("/integrations"), refetchInterval: 30_000 });
   if (q.isLoading) return <Loading />;
@@ -34,6 +74,7 @@ export default function IntegrationsPage() {
     <div className="space-y-3">
       <h1 className="text-lg font-semibold">Data & Integration Settings</h1>
       {d.fallback_note && <div className="rounded border border-amber-700 bg-amber-950/30 p-2 text-xs text-amber-200">{d.fallback_note}</div>}
+      <UpstoxConnect provider={d.providers.find((p) => p.name === "upstox")} />
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
         {d.providers.map((p) => (
           <Panel key={p.name} title={p.display_name} right={<span className="flex items-center gap-2">{p.active && <Pill className="text-sky-300">ACTIVE</Pill>}<DataLabel label={p.health.status} /></span>}>

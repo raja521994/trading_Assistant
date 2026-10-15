@@ -110,3 +110,8 @@ class MarketDataProvider(ABC):
     @property
     def enabled(self) -> bool:
         return True
+
+    def session_state(self, now: datetime) -> str:
+        from .calendar import market_session_state
+
+        return market_session_state(now)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import os
 import time
 from collections import defaultdict
 from datetime import datetime
@@ -18,14 +19,16 @@ from sqlalchemy.orm import Session
 
 from ..ai.assistant import answer, llm_status, suggested_questions
 from ..backtest.service import BacktestRequest, latest_evidence, run_backtest
-from ..config import get_settings
+from ..config import get_settings, update_env_file
 from ..data.coverage import coverage_matrix
 from ..db import get_db
-from ..jobs.scheduler import _lock, status as job_status
+from ..jobs.scheduler import _lock, switch_provider, status as job_status
+from ..logging_setup import add_secret
 from ..models import AuditLog, BacktestRun, PaperTrade, Signal
 from ..paper.broker import (
     PaperOrderRejected,
     PaperOrderRequest,
+    audit,
     close_paper_trade,
     equity_curve_points,
     place_paper_order,
@@ -33,6 +36,7 @@ from ..paper.broker import (
 )
 from ..providers.registry import active_provider, all_providers, provider_fallback_reason
 from ..providers.sample import now_ist
+from ..providers.upstox import validate_token
 from ..risk.limits import load_risk_config
 
 router = APIRouter(prefix="/api")
@@ -190,7 +194,8 @@ def performance(db: Session = Depends(get_db)) -> dict[str, Any]:
         a["trades"] += 1
         a["net_pnl"] += t.net_pnl or 0.0
         a["wins"] += 1 if (t.net_pnl or 0) > 0 else 0
-    sigs = [s for s in db.scalars(select(Signal).where(Signal.outcome.is_not(None))).all() if s.outcome]
+    sigs = [s for s in db.scalars(select(Signal).where(Signal.outcome.is_not(None),
+                                                     Signal.provider == active_provider().name)).all() if s.outcome]
     outcomes: dict[tuple[str, str], dict[str, Any]] = {}
     for s in sigs:
         o = outcomes.setdefault((s.origin, s.strategy), {"origin": s.origin, "strategy": s.strategy, "count": 0,
@@ -296,3 +301,39 @@ def integrations(db: Session = Depends(get_db)) -> dict[str, Any]:
                 "Never enter your Kite password, PIN or TOTP into this application.",
             ],
             "server_time": datetime.now().isoformat(), "checked_at": int(time.time())}
+
+
+class TokenBody(BaseModel):
+    token: str = Field(..., min_length=20, max_length=4096)
+
+
+@router.post("/integrations/upstox/token")
+def set_upstox_token(body: TokenBody, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Validate a read-only Upstox Analytics Token, store it server-side (backend/.env) and switch to live data.
+    The token is never returned, logged or stored in the browser."""
+    token = body.token.strip()
+    ok, msg = validate_token(token)
+    if not ok:
+        audit(db, "upstox_token_rejected", {"reason": msg})
+        db.commit()
+        raise HTTPException(400, msg)
+    add_secret(token)
+    update_env_file("UPSTOX_ACCESS_TOKEN", token)
+    update_env_file("DATA_PROVIDER", "upstox")
+    os.environ["UPSTOX_ACCESS_TOKEN"] = token
+    os.environ["DATA_PROVIDER"] = "upstox"
+    audit(db, "upstox_token_saved", {"token_hint": f"...{token[-4:]}"})
+    db.commit()
+    switch_provider()
+    return {"connected": True, "message": msg + ". Loading live history in the background (about a minute).",
+            "token_hint": f"...{token[-4:]}"}
+
+
+@router.delete("/integrations/upstox/token")
+def delete_upstox_token(db: Session = Depends(get_db)) -> dict[str, Any]:
+    update_env_file("UPSTOX_ACCESS_TOKEN", None)
+    os.environ.pop("UPSTOX_ACCESS_TOKEN", None)
+    audit(db, "upstox_token_removed", {})
+    db.commit()
+    switch_provider()
+    return {"connected": False}

@@ -45,7 +45,17 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False)
 
 
+_filter: RedactingFilter | None = None
+
+
+def add_secret(value: str) -> None:
+    """Register a secret obtained at runtime (e.g. a token pasted in the UI) for log redaction."""
+    if _filter is not None and value and value not in _filter.secrets:
+        _filter.secrets.append(value)
+
+
 def setup_logging(level: str = "INFO", secrets: list[str] | None = None) -> None:
+    global _filter
     root = logging.getLogger()
     root.setLevel(level.upper())
     for h in list(root.handlers):
@@ -54,5 +64,8 @@ def setup_logging(level: str = "INFO", secrets: list[str] | None = None) -> None
     handler = logging.StreamHandler(sys.stdout)
     handler._atd = True  # type: ignore[attr-defined]
     handler.setFormatter(JsonFormatter())
-    handler.addFilter(RedactingFilter(secrets))
+    _filter = RedactingFilter(secrets)
+    handler.addFilter(_filter)
     root.addHandler(handler)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)

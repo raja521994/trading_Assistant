@@ -148,7 +148,7 @@ def compute_evidence(session: Session, strategy_ids: list[str] | None = None) ->
             "net_return_pct": m.get("net_return_pct"), "max_drawdown_pct": m.get("max_drawdown_pct"),
             "sharpe": m.get("sharpe"), "benchmark_return_pct": m.get("benchmark_return_pct"),
             "period_start": m.get("period_start"), "period_end": m.get("period_end"),
-            "low_sample": (m.get("num_trades") or 0) < 30, "data_label": data_label(),
+            "low_sample": (m.get("num_trades") or 0) < 30, "data_label": data_label(), "provider": active_provider().name,
             "data_last_bar": last_bar.isoformat(), "folds": [
                 {"fold": f["fold"], "params": f["selected_params"], "oos": f["oos_metrics"], "is": f["is_metrics"]}
                 for f in wf.get("folds", [])],
@@ -167,10 +167,12 @@ def compute_evidence(session: Session, strategy_ids: list[str] | None = None) ->
 
 def latest_evidence(session: Session) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
+    prov = active_provider().name
     rows = session.scalars(select(BacktestRun).where(BacktestRun.kind == "evidence")
                            .order_by(BacktestRun.created_at.desc(), BacktestRun.id.desc())).all()
     for r in rows:
-        out.setdefault(r.strategy, r.summary)
+        if r.summary.get("provider", "sample") == prov:
+            out.setdefault(r.strategy, r.summary)
     return out
 
 
@@ -207,6 +209,6 @@ def replay_recent_signals(session: Session, sessions: int = 60) -> int:
         start = dates[-sessions] if len(dates) > sessions else dates[0]
         res = run_portfolio(strat, data, BTConfig(costs=costs, start=start))
         for t in res["trades"]:
-            created += record_replay_signal(session, strat, t)
+            created += record_replay_signal(session, strat, t, active_provider().name)
     session.flush()
     return created

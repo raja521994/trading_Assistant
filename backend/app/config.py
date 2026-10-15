@@ -24,10 +24,17 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     database_url: str = "sqlite:///./var/trading.db"
 
-    data_provider: str = "sample"
+    # "upstox" (default, real-time via free read-only Analytics Token), "kite", or "sample" (SIMULATED).
+    # If the configured live provider has no credentials, the app falls back to SIMULATED sample data and says so.
+    data_provider: str = "upstox"
     sample_seed: int = 42
     sample_start_date: str = "2023-01-02"
     sample_intraday_sessions: int = 20
+
+    upstox_access_token: SecretStr | None = None
+    upstox_universe: str | None = None  # comma-separated NSE symbols; default = NIFTY 50-style list
+    upstox_history_start: str = "2023-01-01"
+    upstox_intraday_days: int = 30
 
     kite_api_key: SecretStr | None = None
     kite_api_secret: SecretStr | None = None
@@ -61,7 +68,8 @@ class Settings(BaseSettings):
 
     def secret_values(self) -> list[str]:
         out: list[str] = []
-        for s in (self.kite_api_key, self.kite_api_secret, self.kite_access_token, self.llm_api_key):
+        for s in (self.kite_api_key, self.kite_api_secret, self.kite_access_token, self.llm_api_key,
+                  self.upstox_access_token):
             if s is not None:
                 val = s.get_secret_value()
                 if val and len(val) >= 4:
@@ -76,3 +84,14 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def update_env_file(key: str, value: str | None, path: Path | None = None) -> Path:
+    """Set (or remove when value is None) KEY=value in backend/.env (server-side only; git-ignored)."""
+    path = path or BACKEND_DIR / ".env"
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    lines = [ln for ln in lines if not ln.strip().startswith(f"{key}=")]
+    if value is not None:
+        lines.append(f"{key}={value}")
+    path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    return path

@@ -21,7 +21,7 @@ from ..db import SessionLocal, get_db
 from ..jobs.scheduler import status as job_status
 from ..models import Signal
 from ..providers.registry import active_provider, provider_fallback_reason
-from ..providers.sample import market_session_state, now_ist
+from ..providers.sample import now_ist
 from ..quant import indicators as ind
 from ..quant.overview import market_overview
 from ..quant.strategies.base import get_strategy
@@ -51,7 +51,7 @@ def meta() -> dict[str, Any]:
         "provider": p.name, "provider_name": p.display_name, "data_label": p.capabilities().data_status.value,
         "provider_note": provider_fallback_reason(), "live_trading_enabled": False,
         "live_trading_note": "Order placement is not implemented; only paper trading is available.",
-        "market_session": market_session_state(now_ist()), "jobs": job_status, "llm": llm_status(),
+        "market_session": p.session_state(now_ist()), "jobs": job_status, "llm": llm_status(),
         "disclaimers": DISCLAIMERS, "server_time_ist": now_ist().isoformat(),
     }
 
@@ -155,7 +155,7 @@ def chart(exchange: str, symbol: str, timeframe: str = Query("1d", pattern="^(1d
     out["markers"] = markers
     out["strategy_trades"] = trades
     sigs = db.scalars(select(Signal).where(Signal.symbol == symbol, Signal.exchange == exchange,
-                                           Signal.origin == "live_scan").order_by(Signal.updated_at.desc()).limit(10))
+                                           Signal.origin == "live_scan", Signal.provider == active_provider().name).order_by(Signal.updated_at.desc()).limit(10))
     out["signals"] = [{"id": s.id, "strategy": s.strategy, "state": s.state, "action": s.action,
                        "stop_loss": s.payload.get("stop_loss"), "targets": s.payload.get("targets"),
                        "entry": s.payload.get("entry"), "timeframe": s.payload.get("timeframe")} for s in sigs]
@@ -193,6 +193,6 @@ def _snapshot() -> dict[str, Any]:
                                "status": q.status.value})
     finally:
         db.close()
-    return {"ts": now.isoformat(), "market_session": market_session_state(now), "quotes": quotes,
+    return {"ts": now.isoformat(), "market_session": p.session_state(now), "quotes": quotes,
             "data_label": p.capabilities().data_status.value, "jobs": {k: job_status[k] for k in
                                                                         ("startup", "evidence", "last_tick")}}

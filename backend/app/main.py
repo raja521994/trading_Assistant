@@ -27,7 +27,6 @@ async def lifespan(app: FastAPI):  # noqa: ANN201
     run_migrations()
     tasks: list[asyncio.Task] = []
     if s.background_jobs:
-        await asyncio.to_thread(scheduler.startup_sync)
         scheduler.start_background(tasks)
     log.info("startup complete (provider=%s)", s.data_provider)
     yield
@@ -37,7 +36,7 @@ async def lifespan(app: FastAPI):  # noqa: ANN201
 
 app = FastAPI(title="AI Trading Dashboard API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=get_settings().cors_origins, allow_credentials=False,
-                   allow_methods=["GET", "POST", "PUT"], allow_headers=["Content-Type"])
+                   allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 app.include_router(routes_market.router)
 app.include_router(routes_signals.router)
 app.include_router(routes_trading.router)
