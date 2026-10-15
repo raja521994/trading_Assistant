@@ -1,0 +1,28 @@
+id: donchian_breakout
+name: Donchian Channel Breakout (Turtle-style)
+version: "1.0.0"
+category: Breakout / trend following
+modes: [positional, swing]
+timeframe: 1d
+direction: long_only
+instruments: [EQ]
+reference: >-
+  Richard Donchian's channel rules; popularised by the Turtle Trading rules (C. Faith, "Way of the Turtle", 2007).
+market_conditions: Strong trending markets and range expansions. Low win rate with occasional large winners.
+required_data: [Daily OHLCV, at least entry_n + 20 sessions]
+indicators: ["Donchian(entry_n) upper of prior bars", "Donchian(exit_n) lower of prior bars", "ATR(14)"]
+params: {entry_n: 55, exit_n: 20, atr_stop_mult: 2.0, target_r: null, max_hold_bars: 120}
+param_grid: {entry_n: [40, 55], exit_n: [20]}
+entry: >-
+  Daily close above the highest high of the prior entry_n sessions (first close beyond the channel).
+  Entry at the next session's open.
+stop_loss: Initial stop = signal close - atr_stop_mult x ATR(14).
+exit: Close below the lowest low of the prior exit_n sessions (trailing), initial stop, or max_hold_bars.
+position_sizing: Fixed fractional risk per trade based on initial stop distance, capped by max allocation.
+costs: Zerodha-style equity-delivery charges plus slippage bps per side.
+failure_modes:
+  - False breakouts that reverse back into the range.
+  - Win rate is typically low; long losing streaks are normal for this methodology.
+overfitting_risks: Channel lengths are classic published values; only entry_n is varied in walk-forward.
+limitations: Long-only. No fixed profit target (trailing exit) so risk-reward is not defined up front.
+backtest_evidence: Computed at runtime on the loaded dataset (SIMULATED in sample mode).

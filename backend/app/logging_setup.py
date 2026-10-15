@@ -22,8 +22,8 @@ class RedactingFilter(logging.Filter):
     def redact(self, text: str) -> str:
         for s in self.secrets:
             text = text.replace(s, "***REDACTED***")
-        text = _KV_SECRET.sub(lambda m: f"{m.group(1)}{m.group(2)}***REDACTED***", text)
         text = _BEARER.sub(lambda m: f"{m.group(1)}***REDACTED***", text)
+        text = _KV_SECRET.sub(lambda m: f"{m.group(1)}{m.group(2)}***REDACTED***", text)
         return text
 
     def filter(self, record: logging.LogRecord) -> bool:

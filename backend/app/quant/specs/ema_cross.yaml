@@ -1,0 +1,35 @@
+id: ema_cross
+name: EMA Trend Crossover with ADX Filter
+version: "1.0.0"
+category: Trend following / moving-average crossover
+modes: [swing]
+timeframe: 1d
+direction: long_only
+instruments: [EQ]
+reference: >-
+  Moving-average crossover systems are documented in J. J. Murphy, "Technical Analysis of the Financial
+  Markets" (1999), ch. 9. ADX / directional movement: J. Welles Wilder Jr., "New Concepts in Technical
+  Trading Systems" (1978).
+market_conditions: Persistent directional trends with expanding ADX. Tends to whipsaw in range-bound markets.
+required_data: [Daily OHLCV, at least 80 sessions]
+indicators: ["EMA(fast)", "EMA(slow)", "ADX(14)", "ATR(14)"]
+params: {fast: 20, slow: 50, adx_min: 20, atr_stop_mult: 2.0, target_r: 2.0, max_hold_bars: 30}
+param_grid: {fast: [10, 20], adx_min: [20, 25]}
+entry: >-
+  On a daily close, EMA(fast) crosses above EMA(slow) AND ADX(14) >= adx_min AND close > EMA(slow).
+  Entry at the next session's open (no same-bar fills).
+stop_loss: Initial stop = signal close - atr_stop_mult x ATR(14).
+exit: >-
+  Target at target_r x initial risk; or exit at next open after EMA(fast) closes below EMA(slow);
+  or time exit after max_hold_bars sessions.
+position_sizing: >-
+  Fixed fractional - quantity = (equity x risk_per_trade%) / (entry - stop), capped by the maximum
+  allocation per instrument and available cash (no leverage).
+costs: Zerodha-style equity-delivery charges (configurable, see Risk settings) plus slippage in bps per side.
+failure_modes:
+  - Whipsaws in sideways markets produce repeated small losses.
+  - Crossovers lag; a large part of the move may be over at entry.
+  - Gaps through the stop produce losses larger than 1R.
+overfitting_risks: Only two parameters are varied in walk-forward (fast length and ADX threshold) on a tiny grid.
+limitations: Long-only (cash-segment delivery cannot be shorted overnight). No earnings/event filter (event data not connected).
+backtest_evidence: Computed at runtime on the loaded dataset (SIMULATED in sample mode) - see Strategy Lab and walk-forward OOS results.

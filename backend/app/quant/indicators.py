@@ -25,15 +25,18 @@ def _seeded_smooth(values: np.ndarray, n: int, alpha: float) -> np.ndarray:
         return out
     seed_idx = f + n - 1
     out[seed_idx] = np.mean(values[f:f + n])
-    prev = out[seed_idx]
-    for i in range(seed_idx + 1, len(values)):
-        v = values[i]
-        if np.isnan(v):
-            out[i] = prev
+    prev = float(out[seed_idx])
+    vals = values.tolist()
+    res = out.tolist()
+    beta = 1.0 - alpha
+    for i in range(seed_idx + 1, len(vals)):
+        v = vals[i]
+        if v != v:
+            res[i] = prev
             continue
-        prev = alpha * v + (1.0 - alpha) * prev
-        out[i] = prev
-    return out
+        prev = alpha * v + beta * prev
+        res[i] = prev
+    return np.asarray(res, dtype=float)
 
 
 def sma(s: pd.Series, n: int) -> pd.Series:
@@ -157,9 +160,20 @@ def realized_vol(close: pd.Series, n: int = 20, periods_per_year: int = 252) -> 
 
 
 def pct_rank(s: pd.Series, n: int = 252) -> pd.Series:
-    """Percentile rank (0-100) of each value within its trailing window (causal)."""
-    return s.rolling(n, min_periods=max(20, n // 4)).apply(lambda w: (w[:-1] < w[-1]).mean() * 100.0 if len(w) > 1
-                                                            else np.nan, raw=True)
+    """Percentile rank (0-100) of each value versus the previous n-1 values in its trailing window (causal)."""
+    v = s.to_numpy(dtype=float)
+    out = np.full(len(v), np.nan)
+    if len(v) >= n:
+        w = np.lib.stride_tricks.sliding_window_view(v, n)
+        last = w[:, -1:]
+        prior = w[:, :-1]
+        valid = ~np.isnan(prior)
+        cnt = valid.sum(axis=1)
+        below = ((prior < last) & valid).sum(axis=1)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            r = np.where((cnt >= n // 4) & ~np.isnan(last[:, 0]), below / cnt * 100.0, np.nan)
+        out[n - 1:] = r
+    return pd.Series(out, index=s.index)
 
 
 INDICATOR_CATALOG = {

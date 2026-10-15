@@ -1,0 +1,28 @@
+id: rsi2_meanrev
+name: RSI(2) Pullback in Uptrend
+version: "1.0.0"
+category: Mean reversion
+modes: [swing]
+timeframe: 1d
+direction: long_only
+instruments: [EQ]
+contrarian_components: [momentum]
+reference: >-
+  L. Connors & C. Alvarez, "Short Term Trading Strategies That Work" (2008) - RSI(2) with 200-day trend filter.
+  RSI: J. Welles Wilder Jr. (1978). A protective ATR stop is added here for risk control (not in the original).
+market_conditions: Established uptrends with short, sharp pullbacks. Fails in regime changes / crashes.
+required_data: [Daily OHLCV, at least 205 sessions]
+indicators: ["RSI(rsi_n)", "SMA(trend_sma)", "SMA(exit_sma)", "ATR(14)"]
+params: {rsi_n: 2, entry_rsi: 10, trend_sma: 200, exit_sma: 5, atr_stop_mult: 2.5, target_r: null, max_hold_bars: 10}
+param_grid: {entry_rsi: [5, 10], exit_sma: [5]}
+entry: Close above SMA(trend_sma) AND RSI(rsi_n) below entry_rsi. Entry at the next session's open.
+stop_loss: Protective stop = signal close - atr_stop_mult x ATR(14).
+exit: Close above SMA(exit_sma), close below SMA(trend_sma), protective stop, or max_hold_bars.
+position_sizing: Fixed fractional risk per trade based on the protective stop, capped by max allocation.
+costs: Zerodha-style equity-delivery charges plus slippage bps per side. High turnover makes costs material.
+failure_modes:
+  - Buying weakness during the start of a genuine downtrend ("catching a falling knife").
+  - Momentum indicators are bearish by construction at entry - they are expected, not conflicting.
+overfitting_risks: Published thresholds; only entry_rsi varied in walk-forward.
+limitations: Long-only; short holding period means transaction costs dominate small edges.
+backtest_evidence: Computed at runtime on the loaded dataset (SIMULATED in sample mode).

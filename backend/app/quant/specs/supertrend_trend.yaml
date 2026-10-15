@@ -1,0 +1,27 @@
+id: supertrend_trend
+name: Supertrend Flip with EMA Trend Filter
+version: "1.0.0"
+category: Trend following / volatility stop
+modes: [swing, positional]
+timeframe: 1d
+direction: long_only
+instruments: [EQ]
+reference: >-
+  Supertrend (ATR-band trailing stop, attributed to O. Seban). ATR: J. Welles Wilder Jr. (1978).
+  Implementation follows the widely used final-band recursion documented in indicators.py.
+market_conditions: Trending markets; whipsaws when volatility contracts in a range.
+required_data: [Daily OHLCV, at least 205 sessions]
+indicators: ["Supertrend(atr_n, mult)", "EMA(trend_ema)", "ATR(14)"]
+params: {atr_n: 10, mult: 3.0, trend_ema: 200, min_stop_atr: 1.0, target_r: 3.0, max_hold_bars: 60}
+param_grid: {mult: [2.5, 3.0]}
+entry: Supertrend direction flips from bearish to bullish on the close AND close > EMA(trend_ema). Entry next open.
+stop_loss: Initial stop = min(Supertrend line, close - min_stop_atr x ATR(14)).
+exit: Supertrend flips bearish (exit next open), target at target_r x risk, initial stop, or max_hold_bars.
+position_sizing: Fixed fractional risk per trade based on the initial stop, capped by max allocation.
+costs: Zerodha-style equity-delivery charges plus slippage bps per side.
+failure_modes:
+  - Frequent flips in low-volatility ranges.
+  - Wide ATR bands produce large initial risk (smaller position size).
+overfitting_risks: Only the ATR multiplier is varied in walk-forward.
+limitations: Long-only. No event-risk filter (event data not connected).
+backtest_evidence: Computed at runtime on the loaded dataset (SIMULATED in sample mode).

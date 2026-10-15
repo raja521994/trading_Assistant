@@ -1,0 +1,31 @@
+id: orb_vwap
+name: Opening-Range Breakout with VWAP & Volume Confirmation
+version: "1.0.0"
+category: Intraday breakout
+modes: [intraday]
+timeframe: 5m
+direction: long_short
+instruments: [EQ]
+reference: >-
+  Opening-range breakout: T. Crabel, "Day Trading with Short Term Price Patterns and Opening Range Breakout" (1990).
+  VWAP as an intraday trend/fair-value reference is standard execution-benchmark practice.
+market_conditions: Trend days with early directional conviction and above-average volume.
+required_data: [5-minute OHLCV with volume for the current session and prior 20 bars]
+indicators: ["Opening range (first or_minutes)", "Session VWAP", "Volume ratio vs prior 20 bars", "ATR(14) on 5m"]
+params: {or_minutes: 15, vol_mult: 1.5, target_r: 2.0, last_entry: "14:30", exit_time: "15:15", allow_short: true, max_hold_bars: 75}
+param_grid: {or_minutes: [15, 30], vol_mult: [1.5]}
+entry: >-
+  After the opening range completes, the first 5-minute close beyond the OR high (long) or OR low (short),
+  on the same side of VWAP, with bar volume >= vol_mult x the prior-20-bar average. Entry next bar open.
+  At most one trade per symbol per session; no new entries after last_entry.
+stop_loss: Opening-range midpoint.
+exit: Target at target_r x risk, stop at OR midpoint, or time exit at exit_time IST (always flat by session end).
+position_sizing: Fixed fractional risk per trade based on the OR-midpoint stop, capped by max allocation; MIS leverage not used.
+costs: Zerodha-style equity-intraday charges (brokerage min(0.03%, Rs 20) per order, STT on sell side) plus slippage.
+failure_modes:
+  - Choppy sessions where price oscillates around the opening range.
+  - Late-day reversals before the time exit.
+  - Slippage on fast breakouts is often larger than modelled.
+overfitting_risks: Opening-range length is varied in walk-forward; intraday history is short (sample-size warning shown).
+limitations: Requires reliable intraday volume. Short selling is intraday-only (cash segment).
+backtest_evidence: Computed at runtime on the available intraday history (SIMULATED in sample mode).
