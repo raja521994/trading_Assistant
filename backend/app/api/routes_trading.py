@@ -223,7 +223,7 @@ def performance(db: Session = Depends(get_db)) -> dict[str, Any]:
             "sector_exposure": [{"sector": k, "value": round(v, 2), "pct": round(v / st.equity * 100, 2),
                                  "limit_pct": cfg.max_sector_exposure_pct} for k, v in sector_exp.items()],
             "drawdown_pct": round(dd_now, 3), "max_drawdown_pct": cfg.max_drawdown_pct,
-            "daily_loss": round(max(loss_today, 0), 2),
+            "daily_loss": round(max(loss_today, 0.0) + 0.0, 2),
             "daily_loss_limit": round(st.equity * cfg.max_daily_loss_pct / 100, 2),
             "kill_switch": cfg.kill_switch,
         },

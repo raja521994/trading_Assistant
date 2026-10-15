@@ -143,7 +143,7 @@ def check_trade(p: TradeProposal, state: PortfolioState, cfg: RiskConfig) -> Ris
 
     day_pnl = state.realized_pnl_today + min(state.unrealized_pnl, 0.0)
     loss_lim = state.equity * cfg.max_daily_loss_pct / 100.0
-    add("daily_loss", -day_pnl < loss_lim, f"Today's loss Rs {max(-day_pnl, 0):,.0f} vs limit Rs {loss_lim:,.0f}")
+    add("daily_loss", -day_pnl < loss_lim, f"Today's loss Rs {max(-day_pnl, 0.0) + 0.0:,.0f} vs limit Rs {loss_lim:,.0f}")
 
     dd = (state.peak_equity - state.equity) / state.peak_equity * 100.0 if state.peak_equity > 0 else 0.0
     add("drawdown", dd < cfg.max_drawdown_pct, f"Drawdown {dd:.2f}% vs limit {cfg.max_drawdown_pct}%")
