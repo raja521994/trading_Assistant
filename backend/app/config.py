@@ -24,10 +24,10 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     database_url: str = "sqlite:///./var/trading.db"
 
-    # "yahoo" (default; Yahoo Finance via yfinance, unofficial, may be delayed), "upstox" (real-time via free
-    # read-only Analytics Token), "kite", or "sample" (SIMULATED). If the configured provider is not usable,
+    # "kite" (default; Zerodha Kite Connect, official, real-time, daily login), "yahoo" (unofficial, may be
+    # delayed), "upstox" (real-time via free read-only Analytics Token), or "sample" (SIMULATED). If the configured provider is not usable,
     # the app falls back to SIMULATED sample data and says so.
-    data_provider: str = "yahoo"
+    data_provider: str = "kite"
     universe: str | None = None  # comma-separated NSE symbols for live providers; default = NIFTY 50-style list
     yahoo_history_start: str = "2023-01-01"
     yahoo_intraday_days: int = 30
@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     kite_api_key: SecretStr | None = None
     kite_api_secret: SecretStr | None = None
     kite_access_token: SecretStr | None = None
+    kite_token_created: str | None = None  # ISO timestamp of the last successful Zerodha login
 
     # Live execution is not implemented. Kept as an explicit, visible flag that must remain False.
     live_trading_enabled: bool = False

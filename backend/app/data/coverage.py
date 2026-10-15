@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..models import Candle, Instrument
-from ..providers.registry import active_provider, all_providers
+from ..providers.registry import active_provider, listed_providers
 
 IST = "Asia/Kolkata"
 
@@ -21,7 +21,7 @@ def _ts(v: int | None) -> str | None:
 def coverage_matrix(session: Session) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     active = active_provider().name
-    for name, p in all_providers().items():
+    for name, p in listed_providers().items():
         caps = p.capabilities()
         health = p.health()
         stored = session.execute(

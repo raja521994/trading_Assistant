@@ -26,6 +26,7 @@ def all_providers() -> dict[str, MarketDataProvider]:
         "kite": KiteProvider(
             s.kite_api_key.get_secret_value() if s.kite_api_key else None,
             s.kite_access_token.get_secret_value() if s.kite_access_token else None,
+            s.kite_token_created, universe, s.yahoo_history_start, s.yahoo_intraday_days,
         ),
         "sample": SampleProvider(s.sample_seed, s.sample_start_date, s.sample_intraday_sessions),
     }
@@ -35,6 +36,13 @@ def reset_providers() -> None:
     """Re-read settings and rebuild providers (used after credentials change)."""
     get_settings.cache_clear()
     all_providers.cache_clear()
+
+
+def listed_providers() -> dict[str, MarketDataProvider]:
+    """Providers shown in status/coverage: Zerodha, sample, and whichever source is active (avoids network health
+    checks against sources the user is not using)."""
+    act = active_provider().name
+    return {k: v for k, v in all_providers().items() if k in ("kite", "sample") or k == act}
 
 
 def active_provider() -> MarketDataProvider:
@@ -53,6 +61,6 @@ def provider_fallback_reason() -> str | None:
     if p is None:
         return f"Unknown DATA_PROVIDER '{s.data_provider}'; showing SIMULATED sample data."
     if not p.enabled:
-        return (f"Live data is not connected yet ({p.display_name} needs credentials) - showing SIMULATED sample "
-                "data. Connect it in Data & Integrations.")
+        why = "; ".join(getattr(p, "missing_requirements", lambda: [])()) or "needs credentials"
+        return f"{p.display_name} is not connected ({why}). Showing SIMULATED sample data until it is."
     return None

@@ -17,10 +17,6 @@ dependencies = [
     "yfinance>=1.7.0",
 ]
 
-[project.optional-dependencies]
-# Official Zerodha SDK; only needed when DATA_PROVIDER=kite
-kite = ["kiteconnect>=5.0"]
-
 [dependency-groups]
 dev = ["pytest>=8.2"]
 

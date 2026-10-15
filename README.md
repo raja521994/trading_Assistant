@@ -6,20 +6,37 @@ assumptions → interpretation), sizes positions against configurable risk limit
 out-of-sample evaluation, and lets you **paper trade** signals and track outcomes.
 
 > **Not investment advice. No returns are guaranteed.** Live order execution is **disabled and not
-> implemented**. Market data is **real NSE/BSE data from Yahoo Finance by default** (no account or key needed;
-> unofficial source, labelled **DELAYED** — may lag up to ~15 min). For zero-delay data connect Upstox (free, read-only
-> token). If no live source is reachable the app shows **SIMULATED** sample data and labels it as such everywhere.
+> implemented**. Live market data comes from **Zerodha Kite Connect** (official API, read-only) once you link your
+> Kite Connect app and log in. Until then — or after Zerodha's daily session reset — the app shows **SIMULATED** sample
+> data and labels it as such in every API response and on every page.
 
 ```
 NSE/BSE + authorised providers ──► Market data & storage ──► Quant engine + AI research ──► Risk & signal validation ──► Dashboard
- (YahooProvider [DELAYED, default] (ingest, validation,        (indicators, YAML strategy     (sizing, limits, costs,       (React/TS/Vite,
-  | UpstoxProvider [LIVE] | Kite    SQLite/Postgres,            specs, scanner, scoring,       state machine, WAIT /         Lightweight Charts,
+ (KiteProvider [LIVE, default]     (ingest, validation,        (indicators, YAML strategy     (sizing, limits, costs,       (React/TS/Vite,
+  | (Upstox / Yahoo, optional)      SQLite/Postgres,            specs, scanner, scoring,       state machine, WAIT /         Lightweight Charts,
   | SampleProvider [SIMULATED])     coverage matrix)            regime, template explainer)    NO TRADE, paper broker)       SSE ticker)
 ```
 
-## Data sources
+## Link Zerodha (live data, default)
 
-**Yahoo Finance (default, works out of the box).** No Yahoo account, login or API key is used — the backend reads public
+1. At <https://developers.kite.trade> create a Kite Connect app with **Redirect URL `http://127.0.0.1:5173`**. Its plan
+   must include market data / historical data (otherwise Zerodha returns a permission error, which the app shows).
+2. Start the app, open **Data & Integrations → Live market data — Zerodha Kite Connect**, paste the app's **API key**
+   and **API secret**, click **Save keys** (stored only in `backend/.env`, never sent back to the browser).
+3. Click **Login with Zerodha**, sign in on kite.zerodha.com; Zerodha redirects back to `http://127.0.0.1:5173`, and the
+   backend exchanges the one-time `request_token` (SHA-256 checksum with your secret) for today's access token.
+4. The backend loads ~3 years of daily bars and 30 days of 5-minute bars (≈1–2 min at Zerodha's 3 req/s historical
+   limit), then polls quotes every few seconds and new 5-minute bars every minute.
+
+Zerodha resets access tokens daily (~06:00 IST): **log in again each trading day** (the app detects the expired session
+and falls back to clearly-labelled SIMULATED data until you do). The app never calls order APIs and never asks for
+your Kite password, PIN or TOTP.
+
+## Optional other data sources (hidden in the UI)
+
+The code also contains read-only Upstox and Yahoo Finance adapters (`DATA_PROVIDER=upstox|yahoo`), not shown in the UI.
+
+**Yahoo Finance.** No Yahoo account, login or API key is used — the backend reads public
 Yahoo Finance data through the open-source [`yfinance`](https://github.com/ranaroussi/yfinance) library: daily bars since
 2023, 5-minute bars for the last 30 days (Yahoo keeps ~60), and quotes refreshed every ~30 s, all batched across the
 universe. Caveats: Yahoo has **no official API** (undocumented endpoints; personal, non-commercial use per Yahoo's terms),
@@ -69,7 +86,7 @@ To reset all local state, stop the backend and delete `backend/var/`.
 ### Tests, typecheck, build
 
 ```powershell
-cd backend;  uv run pytest            # 77 tests: indicators, signal logic, sizing, risk limits, costs, backtest, API
+cd backend;  uv run pytest            # 85 tests: indicators, signal logic, sizing, risk limits, costs, backtest, API
 cd frontend; npm run typecheck        # tsc --noEmit
 cd frontend; npm run build            # production bundle in frontend/dist
 ```
@@ -90,6 +107,7 @@ cd frontend; npm run build            # production bundle in frontend/dist
 | `GET/PUT /api/scoring/weights` | Transparent composite-score weights |
 | `POST /api/assistant/ask` | AI research assistant (retrieval + calculations, no invented data) |
 | `GET /api/integrations` | Provider status, capabilities, coverage matrix, not-connected list |
+| `GET /api/integrations/kite`, `POST .../kite/keys`, `POST/DELETE .../kite/session` | Zerodha status, save API key+secret (server-side), exchange the login `request_token`, logout |
 | `POST /api/integrations/provider` | Choose the active data source (yahoo / upstox / kite / sample) |
 | `POST/DELETE /api/integrations/upstox/token` | Validate + store (server-side) / remove the Upstox Analytics Token and switch provider |
 | `GET /api/stream` | Server-sent events: index quotes, session, job status |
@@ -128,16 +146,16 @@ is rejected (falls back to the deterministic interpretation). The AI cannot plac
 
 | Provider | Status in this build | Needs verification before use |
 |---|---|---|
-| **Yahoo Finance** (`backend/app/providers/yahoo.py`) — **default** | Real data via `yfinance` (no login): batched daily + 5-minute candles, quotes, holiday inference (no bars on a weekday), derived daily bars for indices Yahoo lacks. Labelled DELAYED. Verified end-to-end against real Yahoo data (ingest → scan → walk-forward). | Unofficial/undocumented endpoints, personal non-commercial use only; may be delayed or rate-limited; raw (unadjusted) prices; static universe. |
-| **Upstox** (`backend/app/providers/upstox.py`) — zero-delay option | Real-time, read-only via the free Analytics Token: instrument master (public BOD JSON), daily candles (V3, from 2023), 5-minute candles (last 30 days + today's completed bars), batched LTP quotes (V3, ≤500 keys/call), market holidays. Rate-limited to 8 req/s (Upstox limit 50/s, 500/min). Universe: NIFTY 50-style list (configurable `UPSTOX_UNIVERSE`) + 10 indices. Unit-tested with a mocked HTTP transport; token rejection verified against the real API. | Universe is static (not auto-synced with index rebalances); candles not adjusted here for corporate actions; WebSocket streaming, option chain, fundamentals and news APIs exist at Upstox but are not wired yet; redistribution terms if shared beyond personal use. |
+| **Yahoo Finance** (`backend/app/providers/yahoo.py`) — optional, hidden | Real data via `yfinance` (no login): batched daily + 5-minute candles, quotes, holiday inference (no bars on a weekday), derived daily bars for indices Yahoo lacks. Labelled DELAYED. Verified end-to-end against real Yahoo data (ingest → scan → walk-forward). | Unofficial/undocumented endpoints, personal non-commercial use only; may be delayed or rate-limited; raw (unadjusted) prices; static universe. |
+| **Upstox** (`backend/app/providers/upstox.py`) — optional, hidden | Real-time, read-only via the free Analytics Token: instrument master (public BOD JSON), daily candles (V3, from 2023), 5-minute candles (last 30 days + today's completed bars), batched LTP quotes (V3, ≤500 keys/call), market holidays. Rate-limited to 8 req/s (Upstox limit 50/s, 500/min). Universe: NIFTY 50-style list (configurable `UPSTOX_UNIVERSE`) + 10 indices. Unit-tested with a mocked HTTP transport; token rejection verified against the real API. | Universe is static (not auto-synced with index rebalances); candles not adjusted here for corporate actions; WebSocket streaming, option chain, fundamentals and news APIs exist at Upstox but are not wired yet; redistribution terms if shared beyond personal use. |
 | **SampleProvider** | Used only when no live credentials are configured (or `DATA_PROVIDER=sample`). 42 equities + 10 indices, deterministic. **SIMULATED.** | n/a — synthetic, weekday calendar. |
-| **Zerodha Kite Connect** (`backend/app/providers/kite.py`) | Implemented against the official `kiteconnect` SDK interface (instruments, historical candles with chunking, quotes, rate limiting, retries, health). **Read-only; disabled** until `uv sync --extra kite`, `KITE_API_KEY` + `KITE_ACCESS_TOKEN` and `DATA_PROVIDER=kite`. **Not yet tested against the live API.** | Paid Kite Connect app; historical-data add-on and lookback limits; daily access token via the official login redirect — never enter your password/PIN/TOTP in this app. |
+| **Zerodha Kite Connect** (`backend/app/providers/kite.py`) — **default** | Official Kite Connect v3 REST API, read-only: instrument dumps (NSE/BSE, cached daily), daily + 5-minute historical candles (chunked, 2.5 req/s), batched quotes (≤450/call, 1 req/s), in-app login via the official redirect flow with checksum token exchange, daily-expiry detection, holiday inference, clear errors for expired sessions and plans without market data. Unit-tested with a mocked HTTP transport; the real token endpoint was verified to respond. | Your plan includes quotes + historical data; full live ingest needs your login; static universe; KiteTicker WebSocket not wired (REST polling). |
 | Fundamentals, corporate actions, news, F&O (OI/IV/Greeks/option chain), broker holdings | **Not connected** — shown as such in the UI; no placeholder buttons. | Choose licensed providers; evaluate data rights per provider. |
 
 ## Configuration
 
 See `.env.example`. Key settings: `DATABASE_URL` (default SQLite under `backend/var/`; Postgres via
-`docker-compose.yml` + `psycopg`), `DATA_PROVIDER` (`yahoo` default / `upstox` / `kite` / `sample`), `UNIVERSE`, `YAHOO_*`, `UPSTOX_*`, `SAMPLE_*`, `KITE_*`, `LLM_*`,
+`docker-compose.yml` + `psycopg`), `DATA_PROVIDER` (`kite` default / `sample` / `upstox` / `yahoo`), `UNIVERSE`, `KITE_*`, `YAHOO_*`, `UPSTOX_*`, `SAMPLE_*`, `KITE_*`, `LLM_*`,
 `BACKGROUND_JOBS`, `QUOTE_REFRESH_SECONDS`. Risk limits, cost-model rates and score weights are edited in the UI
 (Risk & Performance page) and stored in the database with audit-log entries.
 

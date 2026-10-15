@@ -25,6 +25,71 @@ interface Integrations {
 
 const CAP_FLAGS = ["supports_quotes", "supports_streaming", "supports_depth", "supports_oi", "supports_option_chain", "supports_fundamentals", "supports_corporate_actions", "supports_news", "supports_orders"];
 
+interface KiteStatus {
+  keys_saved: boolean; api_key_hint: string | null; logged_in: boolean; token_created: string | null;
+  missing: string[]; login_url: string | null; redirect_url_hint: string;
+}
+
+function ZerodhaConnect() {
+  const qc = useQueryClient();
+  const st = useQuery({ queryKey: ["kite-status"], queryFn: () => api.get<KiteStatus>("/integrations/kite"), refetchInterval: 15_000 });
+  const [apiKey, setApiKey] = useState("");
+  const [apiSecret, setApiSecret] = useState("");
+  const [editing, setEditing] = useState(false);
+  const saveKeys = useMutation({
+    mutationFn: () => api.post<KiteStatus>("/integrations/kite/keys", { api_key: apiKey.trim(), api_secret: apiSecret.trim() }),
+    onSuccess: () => { setApiKey(""); setApiSecret(""); setEditing(false); qc.invalidateQueries(); },
+  });
+  const logout = useMutation({ mutationFn: () => api.delete("/integrations/kite/session"), onSuccess: () => qc.invalidateQueries() });
+  const s = st.data;
+  if (!s) return <Panel title="Zerodha Kite Connect"><Loading /></Panel>;
+  const showForm = !s.keys_saved || editing;
+  return (
+    <Panel title="Live market data — Zerodha Kite Connect (official, read-only)"
+      right={<DataLabel label={s.logged_in ? "LIVE" : "UNAVAILABLE"} />}>
+      <div className="space-y-3 text-xs">
+        {s.logged_in ? (
+          <div className="rounded border border-emerald-800 bg-emerald-950/30 p-2 text-emerald-200">
+            Connected to Zerodha (logged in {istTime(s.token_created)} IST). Zerodha resets sessions daily at ~06:00 IST — log in again each trading day.
+          </div>
+        ) : s.missing.length > 0 && (
+          <div className="rounded border border-amber-700 bg-amber-950/30 p-2 text-amber-200">{s.missing.join("; ")}</div>
+        )}
+
+        {showForm ? (
+          <form className="space-y-2" onSubmit={(e) => { e.preventDefault(); saveKeys.mutate(); }}>
+            <div className="text-slate-300">Step 1 — paste your Kite Connect app's credentials (from developers.kite.trade → your app). They are stored only on the server (backend/.env); the secret is never shown again.</div>
+            <div className="flex flex-wrap gap-2">
+              <input className="input w-56" placeholder="API key" autoComplete="off" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+              <input className="input w-72" type="password" placeholder="API secret" autoComplete="off" value={apiSecret} onChange={(e) => setApiSecret(e.target.value)} />
+              <button className="btn btn-primary" disabled={apiKey.trim().length < 6 || apiSecret.trim().length < 6 || saveKeys.isPending}>
+                {saveKeys.isPending ? "Saving…" : "Save keys"}</button>
+              {s.keys_saved && <button type="button" className="btn" onClick={() => setEditing(false)}>Cancel</button>}
+            </div>
+            {saveKeys.error && <ErrorBox error={saveKeys.error} />}
+          </form>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-slate-400">API key {s.api_key_hint} saved.</span>
+            {s.login_url && (
+              <a className="btn btn-primary" href={s.login_url}>{s.logged_in ? "Re-login with Zerodha" : "Step 2 — Login with Zerodha"}</a>
+            )}
+            {s.logged_in && <button className="btn btn-danger" disabled={logout.isPending} onClick={() => logout.mutate()}>Logout</button>}
+            <button className="btn" onClick={() => setEditing(true)}>Change keys</button>
+          </div>
+        )}
+        <ul className="list-disc pl-4 text-[11px] text-slate-500 space-y-0.5">
+          <li>{s.redirect_url_hint} (exactly, no trailing path). After you sign in on kite.zerodha.com you'll be sent back here automatically.</li>
+          <li>Your Kite Connect plan must include market data / historical data; otherwise Zerodha returns a permission error, shown here.</li>
+          <li>Read-only: this app never calls Zerodha's order APIs and never asks for your Kite password, PIN or TOTP.</li>
+        </ul>
+      </div>
+    </Panel>
+  );
+}
+
+const SHOWN_PROVIDERS = ["kite", "sample"];
+
 function ProviderSelector({ providers, active }: { providers: Provider[]; active: string }) {
   const qc = useQueryClient();
   const m = useMutation({ mutationFn: (name: string) => api.post("/integrations/provider", { name }), onSuccess: () => qc.invalidateQueries() });
@@ -44,45 +109,6 @@ function ProviderSelector({ providers, active }: { providers: Provider[]; active
   );
 }
 
-function UpstoxConnect({ provider }: { provider?: Provider }) {
-  const qc = useQueryClient();
-  const [token, setToken] = useState("");
-  const save = useMutation({
-    mutationFn: () => api.post<{ message: string; token_hint: string }>("/integrations/upstox/token", { token }),
-    onSuccess: () => { setToken(""); qc.invalidateQueries(); },
-  });
-  const remove = useMutation({ mutationFn: () => api.delete("/integrations/upstox/token"), onSuccess: () => qc.invalidateQueries() });
-  const connected = !!provider?.enabled;
-  return (
-    <Panel title="Live market data — Upstox (real-time, read-only)" right={<DataLabel label={connected ? (provider?.health.connected ? "LIVE" : "UNAVAILABLE") : "UNAVAILABLE"} />}>
-      {connected ? (
-        <div className="space-y-2 text-xs">
-          <div className={provider?.health.connected ? "text-emerald-300" : "text-red-300"}>{provider?.health.message}</div>
-          <div className="text-slate-400">The token is stored only on the server (backend/.env). It is read-only and cannot place orders.</div>
-          <button className="btn btn-danger" disabled={remove.isPending} onClick={() => remove.mutate()}>Disconnect (switch back to SIMULATED data)</button>
-        </div>
-      ) : (
-        <div className="space-y-3 text-xs">
-          <div className="text-slate-300">Real-time NSE/BSE prices, candles and holidays via Upstox's free, read-only <b>Analytics Token</b> (valid 1 year, no daily login, cannot trade).</div>
-          <ol className="list-decimal pl-4 space-y-1 text-slate-300">
-            <li>Open a free Upstox account if you don't have one (<a className="text-sky-300 underline" href="https://upstox.com/open-demat-account/" target="_blank" rel="noreferrer">upstox.com</a>).</li>
-            <li>Go to <a className="text-sky-300 underline" href="https://account.upstox.com/developer/apps#analytics" target="_blank" rel="noreferrer">account.upstox.com/developer/apps → Analytics</a>.</li>
-            <li>Click <b>Generate Token</b> → <b>Confirm</b>, then copy the full token.</li>
-            <li>Paste it below and click Connect. It is validated with one read-only quote call, then stored server-side only.</li>
-          </ol>
-          <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
-            <input className="input flex-1" type="password" autoComplete="off" placeholder="Paste Upstox Analytics Token" value={token} onChange={(e) => setToken(e.target.value)} />
-            <button className="btn btn-primary" disabled={token.trim().length < 20 || save.isPending}>{save.isPending ? "Validating…" : "Connect"}</button>
-          </form>
-          {save.error && <ErrorBox error={save.error} />}
-          {save.isSuccess && <div className="text-emerald-300">{save.data.message}</div>}
-          <div className="text-[10px] text-slate-500">Never share this token. Your Upstox password/PIN/TOTP is never requested by this app.</div>
-        </div>
-      )}
-    </Panel>
-  );
-}
-
 export default function IntegrationsPage() {
   const q = useQuery({ queryKey: ["integrations"], queryFn: () => api.get<Integrations>("/integrations"), refetchInterval: 30_000 });
   if (q.isLoading) return <Loading />;
@@ -93,10 +119,10 @@ export default function IntegrationsPage() {
     <div className="space-y-3">
       <h1 className="text-lg font-semibold">Data & Integration Settings</h1>
       {d.fallback_note && <div className="rounded border border-amber-700 bg-amber-950/30 p-2 text-xs text-amber-200">{d.fallback_note}</div>}
-      <ProviderSelector providers={d.providers} active={d.active_provider} />
-      <UpstoxConnect provider={d.providers.find((p) => p.name === "upstox")} />
+      <ProviderSelector providers={d.providers.filter((p) => SHOWN_PROVIDERS.includes(p.name))} active={d.active_provider} />
+      <ZerodhaConnect />
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-        {d.providers.map((p) => (
+        {d.providers.filter((p) => SHOWN_PROVIDERS.includes(p.name)).map((p) => (
           <Panel key={p.name} title={p.display_name} right={<span className="flex items-center gap-2">{p.active && <Pill className="text-sky-300">ACTIVE</Pill>}<DataLabel label={p.health.status} /></span>}>
             <div className="space-y-2 text-xs">
               <div className="flex items-center gap-2"><span className={clsx("h-2 w-2 rounded-full", p.health.connected ? "bg-emerald-500" : "bg-red-500")} />
@@ -121,7 +147,7 @@ export default function IntegrationsPage() {
       <Panel title="Instrument coverage matrix (what is actually stored)" bodyClass="p-0 overflow-auto">
         <table className="tbl">
           <thead><tr><th>Provider</th><th>Exchange</th><th>Type</th><th>TF</th><th className="text-right">Instruments</th><th className="text-right">Bars</th><th>History start</th><th>History end</th><th>Status</th><th>Latency</th><th>Missing fields</th></tr></thead>
-          <tbody>{d.coverage.map((c, i) => (
+          <tbody>{d.coverage.filter((c) => SHOWN_PROVIDERS.includes(c.provider)).map((c, i) => (
             <tr key={i}><td>{c.provider}{c.active && <span className="ml-1 text-sky-300">●</span>}</td><td>{c.exchange}</td><td>{c.instrument_type}</td><td>{c.timeframe}</td>
               <td className="num text-right">{c.instruments}</td><td className="num text-right">{c.bars.toLocaleString("en-IN")}</td>
               <td>{istTime(c.history_start)}</td><td>{istTime(c.history_end)}</td><td><DataLabel label={c.status} /></td>

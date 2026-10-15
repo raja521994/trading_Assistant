@@ -34,7 +34,9 @@ from ..paper.broker import (
     place_paper_order,
     portfolio_state,
 )
-from ..providers.registry import active_provider, all_providers, provider_fallback_reason
+from ..providers.kite import KiteError, exchange_request_token
+from ..providers.kite import login_url as kite_login_url
+from ..providers.registry import active_provider, all_providers, listed_providers, provider_fallback_reason
 from ..providers.sample import now_ist
 from ..providers.upstox import validate_token
 from ..risk.limits import load_risk_config
@@ -265,7 +267,7 @@ def assistant_meta() -> dict[str, Any]:
 def integrations(db: Session = Depends(get_db)) -> dict[str, Any]:
     s = get_settings()
     providers = []
-    for name, p in all_providers().items():
+    for name, p in listed_providers().items():
         caps = p.capabilities()
         h = p.health()
         providers.append({
@@ -293,11 +295,12 @@ def integrations(db: Session = Depends(get_db)) -> dict[str, Any]:
             "execution": {"live_trading_enabled": False, "paper_trading": True,
                           "note": "No order-placement code exists. Paper fills are simulated locally."},
             "kite_setup": [
-                "Create a Kite Connect app at https://developers.kite.trade (paid subscription).",
-                "Install the SDK: cd backend && uv sync --extra kite",
-                "Complete the official login redirect to obtain a request_token, exchange it for an access token "
-                "using the SDK (generate_session) outside this app, and set KITE_API_KEY / KITE_ACCESS_TOKEN in .env.",
-                "Set DATA_PROVIDER=kite and restart. Access tokens expire daily.",
+                "In https://developers.kite.trade create a Kite Connect app with Redirect URL http://127.0.0.1:5173 "
+                "(its plan must include market data / historical data).",
+                "Paste the app's API key and API secret below and click Save (stored server-side only).",
+                "Click 'Login with Zerodha' and sign in on kite.zerodha.com; you are redirected back and the app "
+                "exchanges the one-time request token for today's access token.",
+                "Zerodha resets access tokens daily (~06:00 IST) - log in again each trading day.",
                 "Never enter your Kite password, PIN or TOTP into this application.",
             ],
             "server_time": datetime.now().isoformat(), "checked_at": int(time.time())}
@@ -344,6 +347,85 @@ def delete_upstox_token(db: Session = Depends(get_db)) -> dict[str, Any]:
 
 class ProviderBody(BaseModel):
     name: str
+
+
+# ---------------- Zerodha Kite Connect (official login flow) ----------------
+class KiteKeysBody(BaseModel):
+    api_key: str = Field(..., min_length=6, max_length=64, pattern=r"^[A-Za-z0-9]+$")
+    api_secret: str = Field(..., min_length=6, max_length=128, pattern=r"^[A-Za-z0-9]+$")
+
+
+class KiteSessionBody(BaseModel):
+    request_token: str = Field(..., min_length=6, max_length=128, pattern=r"^[A-Za-z0-9]+$")
+
+
+def _kite_status() -> dict[str, Any]:
+    s = get_settings()
+    p = all_providers()["kite"]
+    return {"keys_saved": bool(s.kite_api_key and s.kite_api_secret),
+            "api_key_hint": f"...{s.kite_api_key.get_secret_value()[-4:]}" if s.kite_api_key else None,
+            "logged_in": p.enabled, "token_created": s.kite_token_created,
+            "missing": getattr(p, "missing_requirements", lambda: [])(),
+            "login_url": kite_login_url(s.kite_api_key.get_secret_value()) if s.kite_api_key else None,
+            "redirect_url_hint": "Register http://127.0.0.1:5173 as the Redirect URL of your Kite Connect app"}
+
+
+@router.get("/integrations/kite")
+def kite_status() -> dict[str, Any]:
+    return _kite_status()
+
+
+@router.post("/integrations/kite/keys")
+def kite_save_keys(body: KiteKeysBody, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Store the Kite Connect API key + secret server-side (backend/.env). The secret is never returned."""
+    add_secret(body.api_secret)
+    update_env_file("KITE_API_KEY", body.api_key)
+    update_env_file("KITE_API_SECRET", body.api_secret)
+    update_env_file("DATA_PROVIDER", "kite")
+    os.environ.update({"KITE_API_KEY": body.api_key, "KITE_API_SECRET": body.api_secret, "DATA_PROVIDER": "kite"})
+    audit(db, "kite_keys_saved", {"api_key_hint": f"...{body.api_key[-4:]}"})
+    db.commit()
+    switch_provider()
+    return _kite_status()
+
+
+@router.post("/integrations/kite/session")
+def kite_create_session(body: KiteSessionBody, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Exchange the one-time request_token (from Zerodha's redirect) for today's access token."""
+    s = get_settings()
+    if not (s.kite_api_key and s.kite_api_secret):
+        raise HTTPException(400, "Save your Kite API key and secret first")
+    try:
+        data = exchange_request_token(s.kite_api_key.get_secret_value(), s.kite_api_secret.get_secret_value(),
+                                      body.request_token)
+    except KiteError as exc:
+        audit(db, "kite_login_failed", {"error": str(exc)})
+        db.commit()
+        raise HTTPException(400, f"Zerodha login failed: {exc.message or exc}") from exc
+    token = data["access_token"]
+    add_secret(token)
+    created = now_ist().isoformat()
+    update_env_file("KITE_ACCESS_TOKEN", token)
+    update_env_file("KITE_TOKEN_CREATED", created)
+    update_env_file("DATA_PROVIDER", "kite")
+    os.environ.update({"KITE_ACCESS_TOKEN": token, "KITE_TOKEN_CREATED": created, "DATA_PROVIDER": "kite"})
+    audit(db, "kite_login", {"user_id": data.get("user_id")})
+    db.commit()
+    switch_provider()
+    return {**_kite_status(), "logged_in": True, "user_id": data.get("user_id"), "user_name": data.get("user_name"),
+            "message": "Logged in to Zerodha. Loading live market history in the background (about a minute)."}
+
+
+@router.delete("/integrations/kite/session")
+def kite_logout(db: Session = Depends(get_db)) -> dict[str, Any]:
+    update_env_file("KITE_ACCESS_TOKEN", None)
+    update_env_file("KITE_TOKEN_CREATED", None)
+    os.environ.pop("KITE_ACCESS_TOKEN", None)
+    os.environ.pop("KITE_TOKEN_CREATED", None)
+    audit(db, "kite_logout", {})
+    db.commit()
+    switch_provider()
+    return _kite_status()
 
 
 @router.post("/integrations/provider")

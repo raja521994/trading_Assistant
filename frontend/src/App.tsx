@@ -1,7 +1,7 @@
 import clsx from "clsx";
 import { useEffect, useState } from "react";
-import { NavLink, Navigate, Route, Routes } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { NavLink, Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type Meta } from "./lib/api";
 import { istTime, pct, tone } from "./lib/format";
 import { DataLabel } from "./components/ui";
@@ -36,6 +36,35 @@ interface Tick {
   jobs: { startup: string; evidence: string };
 }
 
+// Zerodha redirects back to the registered URL (http://127.0.0.1:5173) with ?request_token=...&status=success.
+// Captured once at load (before routing rewrites the URL) and exchanged server-side for today's access token.
+const INITIAL_PARAMS = new URLSearchParams(window.location.search);
+let kiteCallbackHandled = false;
+
+function useKiteCallback() {
+  const navigate = useNavigate();
+  const qc = useQueryClient();
+  const hasCallback = INITIAL_PARAMS.has("request_token") || INITIAL_PARAMS.get("action") === "login";
+  const [state, setState] = useState<{ status: "idle" | "working" | "ok" | "error"; msg?: string }>(
+    hasCallback ? { status: "working", msg: "Completing Zerodha login…" } : { status: "idle" });
+  useEffect(() => {
+    if (!hasCallback || kiteCallbackHandled) return;
+    kiteCallbackHandled = true;
+    window.history.replaceState({}, "", "/integrations"); // drop the one-time token from the address bar
+    const rt = INITIAL_PARAMS.get("request_token");
+    if (INITIAL_PARAMS.get("status") !== "success" || !rt) {
+      setState({ status: "error", msg: "Zerodha login was cancelled or did not succeed." });
+      navigate("/integrations", { replace: true });
+      return;
+    }
+    api.post<{ message: string; user_name?: string }>("/integrations/kite/session", { request_token: rt })
+      .then((r) => { setState({ status: "ok", msg: `${r.user_name ? r.user_name + ": " : ""}${r.message}` }); qc.invalidateQueries(); })
+      .catch((e: Error) => setState({ status: "error", msg: e.message }))
+      .finally(() => navigate("/integrations", { replace: true }));
+  }, [hasCallback, navigate, qc]);
+  return state;
+}
+
 function useTicker() {
   const [tick, setTick] = useState<Tick | null>(null);
   const [connected, setConnected] = useState(false);
@@ -54,6 +83,7 @@ function useTicker() {
 export default function App() {
   const meta = useQuery({ queryKey: ["meta"], queryFn: () => api.get<Meta>("/meta"), refetchInterval: 30_000 });
   const { tick, connected } = useTicker();
+  const kite = useKiteCallback();
   const label = tick?.data_label ?? meta.data?.data_label ?? "…";
   const headline = (tick?.quotes ?? []).filter((q) => ["NIFTY 50", "NIFTY BANK", "NIFTY FIN SERVICE", "SENSEX"].includes(q.symbol));
 
@@ -88,19 +118,25 @@ export default function App() {
 
       <div className="flex-1 flex flex-col min-w-0">
         <header className="border-b border-ink-700 bg-ink-900">
+          {kite.status !== "idle" && (
+            <div className={clsx("border-b px-4 py-1 text-[11px]",
+              kite.status === "error" ? "bg-red-500/10 border-red-800 text-red-200" :
+              kite.status === "ok" ? "bg-emerald-500/10 border-emerald-800 text-emerald-200" : "bg-sky-500/10 border-sky-800 text-sky-200")}>
+              Zerodha: {kite.msg}
+            </div>
+          )}
           {label === "SIMULATED" && (
             <div className="bg-amber-500/10 border-b border-amber-700/50 px-4 py-1 text-[11px] text-amber-200">
-              SIMULATED DATA — live data is not connected, so all prices are synthetic sample data. {" "}
-              <NavLink to="/integrations" className="underline font-semibold">Connect real-time Upstox data →</NavLink>
+              SIMULATED DATA — Zerodha live data is not connected (or today's session has expired), so all prices are synthetic sample data.{" "}
+              <NavLink to="/integrations" className="underline font-semibold">Link / login with Zerodha →</NavLink>
             </div>
           )}
           {label === "DELAYED" && meta.data?.jobs.startup === "done" && (
             <div className="bg-sky-500/5 border-b border-sky-800/50 px-4 py-1 text-[11px] text-sky-200/90">
-              REAL market data from {meta.data?.provider_name}. For zero-delay data connect Upstox in{" "}
-              <NavLink to="/integrations" className="underline">Data & Integrations</NavLink>. Research & paper trading only.
+              REAL market data from {meta.data?.provider_name} (may be delayed). Research & paper trading only.
             </div>
           )}
-          {label !== "SIMULATED" && meta.data?.jobs.startup !== "done" && (
+          {meta.data && label !== "SIMULATED" && meta.data.jobs.startup !== "done" && (
             <div className="bg-sky-500/10 border-b border-sky-700/50 px-4 py-1 text-[11px] text-sky-200">
               Loading live market history from {meta.data?.provider_name ?? "provider"}… pages fill in automatically (about a minute on first connect).
             </div>

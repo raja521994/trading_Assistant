@@ -20,10 +20,10 @@ SIMULATED sample data. Status legend: ✅ done · 🟡 partial · ⬜ remaining.
   batched LTP quotes, holiday calendar, rate limiting, retries, health; in-app token connect (stored server-side only)
 - 🟡 Upstox: verified against the real API for token validation/rejection; full live ingest needs the user's token
 - ⬜ Upstox WebSocket streaming (currently REST polling every few seconds), option chain, fundamentals, news APIs
-- 🟡 Zerodha Kite Connect adapter (read-only: instruments, historical candles, quotes, rate limiting, retries) —
-  implemented against the official SDK interface, **disabled and untested** until credentials exist
+- ✅ **Zerodha Kite Connect (default)** — official REST API, read-only: instruments, daily + 5m candles, quotes,
+  in-app API-key/secret save and **Login with Zerodha** redirect flow (checksum token exchange), daily expiry handling
+- 🟡 Kite: verified against the real token endpoint; full live ingest requires the user's login + a plan with market data
 - ⬜ KiteTicker WebSocket streaming, market depth, holdings/positions/orders read endpoints
-- ⬜ Kite login redirect helper (request_token → access_token) inside the app
 - ✅ Incremental ingestion (skips calls when data is current), validation (OHLC, duplicates, gaps vs exchange
   session calendar, staleness, sufficiency), coverage matrix
 - ✅ Live and sample signals kept separate (signals tagged by provider; switching providers retires old active signals)
