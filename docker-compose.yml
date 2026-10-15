@@ -1,0 +1,35 @@
+# Optional infrastructure for later phases (not required for the sample-data MVP).
+# Docker is not required to run the app locally; the default DATABASE_URL uses SQLite.
+#
+#   docker compose up -d
+#   DATABASE_URL=postgresql+psycopg://trading:trading@localhost:5432/trading
+#   (and `uv add "psycopg[binary]"` in backend/ before switching)
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_USER: trading
+      POSTGRES_PASSWORD: trading
+      POSTGRES_DB: trading
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trading"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
