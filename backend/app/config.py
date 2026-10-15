@@ -24,9 +24,13 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     database_url: str = "sqlite:///./var/trading.db"
 
-    # "upstox" (default, real-time via free read-only Analytics Token), "kite", or "sample" (SIMULATED).
-    # If the configured live provider has no credentials, the app falls back to SIMULATED sample data and says so.
-    data_provider: str = "upstox"
+    # "yahoo" (default; Yahoo Finance via yfinance, unofficial, may be delayed), "upstox" (real-time via free
+    # read-only Analytics Token), "kite", or "sample" (SIMULATED). If the configured provider is not usable,
+    # the app falls back to SIMULATED sample data and says so.
+    data_provider: str = "yahoo"
+    universe: str | None = None  # comma-separated NSE symbols for live providers; default = NIFTY 50-style list
+    yahoo_history_start: str = "2023-01-01"
+    yahoo_intraday_days: int = 30
     sample_seed: int = 42
     sample_start_date: str = "2023-01-02"
     sample_intraday_sessions: int = 20

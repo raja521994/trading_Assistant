@@ -55,6 +55,7 @@ export function StateBadge({ state }: { state: SignalState | string }) {
 export function DataLabel({ label }: { label: string }) {
   const style =
     label === "LIVE" ? "border-emerald-700 text-emerald-300" :
+    label === "DELAYED" ? "border-sky-700 text-sky-300 bg-sky-500/10" :
     label === "SIMULATED" ? "border-amber-600 text-amber-300 bg-amber-500/10" :
     label === "UNAVAILABLE" ? "border-red-800 text-red-300" : "border-slate-600 text-slate-300";
   return <span className={clsx("inline-block rounded border px-1.5 py-0.5 text-[10px] font-bold tracking-wider", style)}>{label}</span>;

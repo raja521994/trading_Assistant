@@ -25,6 +25,25 @@ interface Integrations {
 
 const CAP_FLAGS = ["supports_quotes", "supports_streaming", "supports_depth", "supports_oi", "supports_option_chain", "supports_fundamentals", "supports_corporate_actions", "supports_news", "supports_orders"];
 
+function ProviderSelector({ providers, active }: { providers: Provider[]; active: string }) {
+  const qc = useQueryClient();
+  const m = useMutation({ mutationFn: (name: string) => api.post("/integrations/provider", { name }), onSuccess: () => qc.invalidateQueries() });
+  return (
+    <Panel title="Active market-data source">
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        {providers.map((p) => (
+          <button key={p.name} className={clsx("btn", p.name === active && "btn-primary")} disabled={!p.enabled || p.name === active || m.isPending}
+            title={p.enabled ? "" : "Needs credentials"} onClick={() => m.mutate(p.name)}>
+            {p.display_name}{p.name === active ? " — active" : !p.enabled ? " (needs credentials)" : ""}
+          </button>
+        ))}
+      </div>
+      {m.error && <div className="mt-2"><ErrorBox error={m.error} /></div>}
+      <div className="mt-2 text-[10px] text-slate-500">Switching reloads history from the new source in the background; signals from different sources are kept separate.</div>
+    </Panel>
+  );
+}
+
 function UpstoxConnect({ provider }: { provider?: Provider }) {
   const qc = useQueryClient();
   const [token, setToken] = useState("");
@@ -74,6 +93,7 @@ export default function IntegrationsPage() {
     <div className="space-y-3">
       <h1 className="text-lg font-semibold">Data & Integration Settings</h1>
       {d.fallback_note && <div className="rounded border border-amber-700 bg-amber-950/30 p-2 text-xs text-amber-200">{d.fallback_note}</div>}
+      <ProviderSelector providers={d.providers} active={d.active_provider} />
       <UpstoxConnect provider={d.providers.find((p) => p.name === "upstox")} />
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
         {d.providers.map((p) => (

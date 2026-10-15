@@ -13,3 +13,12 @@ os.environ["SAMPLE_INTRADAY_SESSIONS"] = "6"
 # Never touch real broker/data APIs from tests, even if backend/.env holds credentials.
 os.environ["UPSTOX_ACCESS_TOKEN"] = ""
 os.environ["KITE_ACCESS_TOKEN"] = ""
+
+import app.providers.yahoo as _yahoo  # noqa: E402
+
+
+def _no_network(*_a, **_k):
+    raise ConnectionError("network disabled in tests")
+
+
+_yahoo._default_download = _no_network

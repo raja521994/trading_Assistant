@@ -6,18 +6,29 @@ assumptions → interpretation), sizes positions against configurable risk limit
 out-of-sample evaluation, and lets you **paper trade** signals and track outcomes.
 
 > **Not investment advice. No returns are guaranteed.** Live order execution is **disabled and not
-> implemented**. Market data is **real-time from Upstox by default** (free, read-only Analytics Token). Until a
-> token is connected, the app shows **SIMULATED** sample data and labels it as such in every API response and on
-> every page.
+> implemented**. Market data is **real NSE/BSE data from Yahoo Finance by default** (no account or key needed;
+> unofficial source, labelled **DELAYED** — may lag up to ~15 min). For zero-delay data connect Upstox (free, read-only
+> token). If no live source is reachable the app shows **SIMULATED** sample data and labels it as such everywhere.
 
 ```
 NSE/BSE + authorised providers ──► Market data & storage ──► Quant engine + AI research ──► Risk & signal validation ──► Dashboard
- (UpstoxProvider [LIVE, default]   (ingest, validation,        (indicators, YAML strategy     (sizing, limits, costs,       (React/TS/Vite,
-  | KiteProvider [read-only]        SQLite/Postgres,            specs, scanner, scoring,       state machine, WAIT /         Lightweight Charts,
+ (YahooProvider [DELAYED, default] (ingest, validation,        (indicators, YAML strategy     (sizing, limits, costs,       (React/TS/Vite,
+  | UpstoxProvider [LIVE] | Kite    SQLite/Postgres,            specs, scanner, scoring,       state machine, WAIT /         Lightweight Charts,
   | SampleProvider [SIMULATED])     coverage matrix)            regime, template explainer)    NO TRADE, paper broker)       SSE ticker)
 ```
 
-## Connect real-time data (Upstox — free, no delay)
+## Data sources
+
+**Yahoo Finance (default, works out of the box).** No Yahoo account, login or API key is used — the backend reads public
+Yahoo Finance data through the open-source [`yfinance`](https://github.com/ranaroussi/yfinance) library: daily bars since
+2023, 5-minute bars for the last 30 days (Yahoo keeps ~60), and quotes refreshed every ~30 s, all batched across the
+universe. Caveats: Yahoo has **no official API** (undocumented endpoints; personal, non-commercial use per Yahoo's terms),
+NSE/BSE data may be **delayed up to ~15 minutes** (labelled DELAYED), requests can be rate-limited, and some NSE sector
+indices (Fin Service, Auto, FMCG, Metal, Energy) have no daily history on Yahoo — their daily bars are derived from
+5-minute data (~60 days only), which is disclosed in Data & Integrations. Choose the active source in
+**Data & Integrations → Active market-data source**.
+
+### Zero-delay alternative: Upstox (free)
 
 1. Have an Upstox account (free to open at upstox.com).
 2. Open <https://account.upstox.com/developer/apps#analytics> → **Analytics** tab → **Generate Token** → **Confirm**, and copy the token.
@@ -58,7 +69,7 @@ To reset all local state, stop the backend and delete `backend/var/`.
 ### Tests, typecheck, build
 
 ```powershell
-cd backend;  uv run pytest            # 70 tests: indicators, signal logic, sizing, risk limits, costs, backtest, API
+cd backend;  uv run pytest            # 77 tests: indicators, signal logic, sizing, risk limits, costs, backtest, API
 cd frontend; npm run typecheck        # tsc --noEmit
 cd frontend; npm run build            # production bundle in frontend/dist
 ```
@@ -79,6 +90,7 @@ cd frontend; npm run build            # production bundle in frontend/dist
 | `GET/PUT /api/scoring/weights` | Transparent composite-score weights |
 | `POST /api/assistant/ask` | AI research assistant (retrieval + calculations, no invented data) |
 | `GET /api/integrations` | Provider status, capabilities, coverage matrix, not-connected list |
+| `POST /api/integrations/provider` | Choose the active data source (yahoo / upstox / kite / sample) |
 | `POST/DELETE /api/integrations/upstox/token` | Validate + store (server-side) / remove the Upstox Analytics Token and switch provider |
 | `GET /api/stream` | Server-sent events: index quotes, session, job status |
 
@@ -116,7 +128,8 @@ is rejected (falls back to the deterministic interpretation). The AI cannot plac
 
 | Provider | Status in this build | Needs verification before use |
 |---|---|---|
-| **Upstox** (`backend/app/providers/upstox.py`) — **default** | Real-time, read-only via the free Analytics Token: instrument master (public BOD JSON), daily candles (V3, from 2023), 5-minute candles (last 30 days + today's completed bars), batched LTP quotes (V3, ≤500 keys/call), market holidays. Rate-limited to 8 req/s (Upstox limit 50/s, 500/min). Universe: NIFTY 50-style list (configurable `UPSTOX_UNIVERSE`) + 10 indices. Unit-tested with a mocked HTTP transport; token rejection verified against the real API. | Universe is static (not auto-synced with index rebalances); candles not adjusted here for corporate actions; WebSocket streaming, option chain, fundamentals and news APIs exist at Upstox but are not wired yet; redistribution terms if shared beyond personal use. |
+| **Yahoo Finance** (`backend/app/providers/yahoo.py`) — **default** | Real data via `yfinance` (no login): batched daily + 5-minute candles, quotes, holiday inference (no bars on a weekday), derived daily bars for indices Yahoo lacks. Labelled DELAYED. Verified end-to-end against real Yahoo data (ingest → scan → walk-forward). | Unofficial/undocumented endpoints, personal non-commercial use only; may be delayed or rate-limited; raw (unadjusted) prices; static universe. |
+| **Upstox** (`backend/app/providers/upstox.py`) — zero-delay option | Real-time, read-only via the free Analytics Token: instrument master (public BOD JSON), daily candles (V3, from 2023), 5-minute candles (last 30 days + today's completed bars), batched LTP quotes (V3, ≤500 keys/call), market holidays. Rate-limited to 8 req/s (Upstox limit 50/s, 500/min). Universe: NIFTY 50-style list (configurable `UPSTOX_UNIVERSE`) + 10 indices. Unit-tested with a mocked HTTP transport; token rejection verified against the real API. | Universe is static (not auto-synced with index rebalances); candles not adjusted here for corporate actions; WebSocket streaming, option chain, fundamentals and news APIs exist at Upstox but are not wired yet; redistribution terms if shared beyond personal use. |
 | **SampleProvider** | Used only when no live credentials are configured (or `DATA_PROVIDER=sample`). 42 equities + 10 indices, deterministic. **SIMULATED.** | n/a — synthetic, weekday calendar. |
 | **Zerodha Kite Connect** (`backend/app/providers/kite.py`) | Implemented against the official `kiteconnect` SDK interface (instruments, historical candles with chunking, quotes, rate limiting, retries, health). **Read-only; disabled** until `uv sync --extra kite`, `KITE_API_KEY` + `KITE_ACCESS_TOKEN` and `DATA_PROVIDER=kite`. **Not yet tested against the live API.** | Paid Kite Connect app; historical-data add-on and lookback limits; daily access token via the official login redirect — never enter your password/PIN/TOTP in this app. |
 | Fundamentals, corporate actions, news, F&O (OI/IV/Greeks/option chain), broker holdings | **Not connected** — shown as such in the UI; no placeholder buttons. | Choose licensed providers; evaluate data rights per provider. |
@@ -124,7 +137,7 @@ is rejected (falls back to the deterministic interpretation). The AI cannot plac
 ## Configuration
 
 See `.env.example`. Key settings: `DATABASE_URL` (default SQLite under `backend/var/`; Postgres via
-`docker-compose.yml` + `psycopg`), `DATA_PROVIDER` (`upstox` default / `kite` / `sample`), `UPSTOX_*`, `SAMPLE_*`, `KITE_*`, `LLM_*`,
+`docker-compose.yml` + `psycopg`), `DATA_PROVIDER` (`yahoo` default / `upstox` / `kite` / `sample`), `UNIVERSE`, `YAHOO_*`, `UPSTOX_*`, `SAMPLE_*`, `KITE_*`, `LLM_*`,
 `BACKGROUND_JOBS`, `QUOTE_REFRESH_SECONDS`. Risk limits, cost-model rates and score weights are edited in the UI
 (Risk & Performance page) and stored in the database with audit-log entries.
 
@@ -144,7 +157,7 @@ See `.env.example`. Key settings: `DATABASE_URL` (default SQLite under `backend/
 - Even on real data, a backtest/walk-forward result is not a promise of future performance.
 - Universe = instruments the provider currently lists (survivorship bias); no corporate-action adjustment.
 - Cost-model rates are estimates (verify at zerodha.com/charges); income tax on gains is excluded.
-- Exchange holidays come from Upstox (current year); historical gap checks use the NIFTY 50 bar dates as the session calendar.
+- Exchange holidays: from Upstox (current year) when connected; with Yahoo a weekday with no NIFTY 50 bar after 09:45 is treated as a holiday. Historical gap checks use the NIFTY 50 bar dates as the session calendar.
 - The composite score is a ranking, not a calibrated probability.
 - The intraday (ORB) scanner only produces setups during the trading session (until 15:15 IST).
 

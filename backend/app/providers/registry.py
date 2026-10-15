@@ -9,13 +9,16 @@ from .base import MarketDataProvider
 from .kite import KiteProvider
 from .sample import SampleProvider
 from .upstox import UpstoxProvider
+from .yahoo import YahooProvider
 
 
 @lru_cache
 def all_providers() -> dict[str, MarketDataProvider]:
     s = get_settings()
-    universe = [x.strip().upper() for x in s.upstox_universe.split(",") if x.strip()] if s.upstox_universe else None
+    raw = s.universe or s.upstox_universe
+    universe = [x.strip().upper() for x in raw.split(",") if x.strip()] if raw else None
     return {
+        "yahoo": YahooProvider(universe, s.yahoo_history_start, s.yahoo_intraday_days),
         "upstox": UpstoxProvider(
             s.upstox_access_token.get_secret_value() if s.upstox_access_token else None,
             universe, s.upstox_history_start, s.upstox_intraday_days,

@@ -13,7 +13,10 @@ SIMULATED sample data. Status legend: ✅ done · 🟡 partial · ⬜ remaining.
 
 ## Market data (Phase 2 — partially in scope)
 - ✅ Provider-independent `MarketDataProvider` interface with explicit capabilities / health
-- ✅ **Upstox real-time provider (default)** via free read-only Analytics Token: instrument master, daily + 5m candles,
+- ✅ **Yahoo Finance provider (default)** via yfinance: real NSE/BSE daily + 5m candles and quotes, no login;
+  labelled DELAYED; derived daily bars for indices Yahoo lacks; verified end-to-end against real data
+- ⬜ Yahoo is an unofficial source (personal use, may be delayed/rate-limited) — use Upstox for zero-delay data
+- ✅ **Upstox real-time provider (zero-delay option)** via free read-only Analytics Token: instrument master, daily + 5m candles,
   batched LTP quotes, holiday calendar, rate limiting, retries, health; in-app token connect (stored server-side only)
 - 🟡 Upstox: verified against the real API for token validation/rejection; full live ingest needs the user's token
 - ⬜ Upstox WebSocket streaming (currently REST polling every few seconds), option chain, fundamentals, news APIs

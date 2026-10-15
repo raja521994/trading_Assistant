@@ -94,6 +94,12 @@ export default function App() {
               <NavLink to="/integrations" className="underline font-semibold">Connect real-time Upstox data →</NavLink>
             </div>
           )}
+          {label === "DELAYED" && meta.data?.jobs.startup === "done" && (
+            <div className="bg-sky-500/5 border-b border-sky-800/50 px-4 py-1 text-[11px] text-sky-200/90">
+              REAL market data from {meta.data?.provider_name}. For zero-delay data connect Upstox in{" "}
+              <NavLink to="/integrations" className="underline">Data & Integrations</NavLink>. Research & paper trading only.
+            </div>
+          )}
           {label !== "SIMULATED" && meta.data?.jobs.startup !== "done" && (
             <div className="bg-sky-500/10 border-b border-sky-700/50 px-4 py-1 text-[11px] text-sky-200">
               Loading live market history from {meta.data?.provider_name ?? "provider"}… pages fill in automatically (about a minute on first connect).

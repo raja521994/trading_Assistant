@@ -333,7 +333,30 @@ def set_upstox_token(body: TokenBody, db: Session = Depends(get_db)) -> dict[str
 def delete_upstox_token(db: Session = Depends(get_db)) -> dict[str, Any]:
     update_env_file("UPSTOX_ACCESS_TOKEN", None)
     os.environ.pop("UPSTOX_ACCESS_TOKEN", None)
+    if get_settings().data_provider == "upstox":
+        update_env_file("DATA_PROVIDER", "yahoo")
+        os.environ["DATA_PROVIDER"] = "yahoo"
     audit(db, "upstox_token_removed", {})
     db.commit()
     switch_provider()
     return {"connected": False}
+
+
+class ProviderBody(BaseModel):
+    name: str
+
+
+@router.post("/integrations/provider")
+def set_provider(body: ProviderBody, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Choose the active market-data provider (persisted to backend/.env)."""
+    p = all_providers().get(body.name)
+    if p is None:
+        raise HTTPException(400, f"Unknown provider '{body.name}'")
+    if not p.enabled:
+        raise HTTPException(400, f"{p.display_name} needs credentials first")
+    update_env_file("DATA_PROVIDER", body.name)
+    os.environ["DATA_PROVIDER"] = body.name
+    audit(db, "data_provider_changed", {"provider": body.name})
+    db.commit()
+    switch_provider()
+    return {"active": body.name}
