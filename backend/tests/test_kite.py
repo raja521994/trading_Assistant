@@ -53,6 +53,10 @@ def make_transport(calls: list, status: int = 200, error_type: str = "TokenExcep
             rows = [[pd.Timestamp(d).strftime("%Y-%m-%dT00:00:00+0530"), 100, 102, 98, 101, 1e5] for d in days]
             return httpx.Response(200, json={"status": "success", "data": {"candles": rows}})
         if p.startswith("/instruments/historical/") and p.endswith("/5minute"):
+            frm = pd.Timestamp(request.url.params["from"])
+            if frm.second or frm.minute % 5:  # real Kite anchors candles to an unaligned `from`
+                return httpx.Response(200, json={"status": "success", "data": {"candles": [
+                    [frm.strftime("%Y-%m-%dT%H:%M:%S+0530"), 1, 1, 1, 1, 1]]}})
             return httpx.Response(200, json={"status": "success", "data": {"candles": k_rows("2025-06-26", "15:25") + k_rows("2025-06-27", "11:00")}})
         if p == "/quote":
             return httpx.Response(200, json={"status": "success", "data": {
@@ -143,3 +147,28 @@ def test_no_session_without_login():
     assert not p.enabled and "Login with Zerodha" in p.missing_requirements()[0]
     p2 = kt.KiteProvider(None, None)
     assert "API key" in p2.missing_requirements()[0]
+
+
+def test_incremental_5m_request_is_aligned(tmp_path, monkeypatch):
+    calls: list = []
+    p = provider("2025-06-27 11:02:30", calls, tmp_path, monkeypatch)
+    start = pd.Timestamp("2025-06-27 10:40:01", tz=IST)  # e.g. "last stored bar + 1 second"
+    m = p.candles("RELIANCE", "NSE", "5m", start=start)
+    frm = [c[2]["from"] for c in calls if c[1].endswith("/5minute")][-1]
+    assert frm.endswith("10:40:00")
+    assert all(t.second == 0 and t.minute % 5 == 0 for t in m.index)
+    assert m.index[0] == pd.Timestamp("2025-06-27 10:45", tz=IST)  # bars >= start only
+
+
+def test_today_daily_close_uses_official_quote_after_session(tmp_path, monkeypatch):
+    during = provider("2025-06-27 11:02:30", [], tmp_path, monkeypatch)
+    assert during.candles("RELIANCE", "NSE", "1d").index[-1].date() == date(2025, 6, 26)
+    after = provider("2025-06-27 16:05", [], tmp_path, monkeypatch)
+    d = after.candles("RELIANCE", "NSE", "1d")
+    assert d.index[-1].date() == date(2025, 6, 27)
+    assert d["close"].iloc[-1] == 1500.5  # quote last_price = official close shown in Kite
+    assert d["high"].iloc[-1] >= 1500.5
+    assert d["close"].iloc[-2] == 101  # past days come from historical candles
+    assert not during.needs_refresh("1d")
+    assert after.needs_refresh("1d") and not after.needs_refresh("1d")  # one final pass after 16:05
+    assert provider("2025-06-27 15:40", [], tmp_path, monkeypatch).needs_refresh("1d")

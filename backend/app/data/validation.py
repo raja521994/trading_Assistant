@@ -58,18 +58,21 @@ def validate_candles(df: pd.DataFrame, timeframe: str, expected_last: datetime |
             issues.append(f"{missing} missing session(s) in the last {len(recent)} bars"
                           + ("" if calendar else " (may be exchange holidays - no exchange calendar supplied)"))
     else:
-        counts = recent.groupby(recent.index.date).size()
-        complete = counts.iloc[:-1] if len(counts) > 1 else counts.iloc[0:0]
-        missing = int((BARS_PER_SESSION - complete[complete < BARS_PER_SESSION]).sum())
+        sessions = list(recent.groupby(recent.index.date))
+        complete = sessions[:-1] if len(sessions) > 1 else []
+        for _, g in complete:
+            span = int((g.index[-1] - g.index[0]).total_seconds() // 300) + 1
+            missing += max(span - len(g), 0)  # internal gaps only (stocks stop at 15:15 for the closing auction)
         if missing:
-            issues.append(f"{missing} missing intraday bar(s) across completed sessions")
+            issues.append(f"{missing} missing intraday bar(s) inside completed sessions")
 
     freshness = "UNKNOWN"
     if expected_last is not None:
         exp = pd.Timestamp(expected_last)
         if timeframe != "1d":
-            # Grace of two bars covers the ingest interval right after a bar completes.
-            exp = exp - pd.Timedelta(minutes=10)
+            # Grace of three bars: covers the ingest interval and NSE's equity closing-auction session
+            # (continuous trading in stocks ends 15:15, so their last 5-minute bar is 15:10; indices run to 15:25).
+            exp = exp - pd.Timedelta(minutes=15)
         if last_ts < exp:
             freshness = "STALE"
             issues.append(f"Latest bar {last_ts.isoformat()} is older than expected {exp.isoformat()}")

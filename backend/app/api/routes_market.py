@@ -159,6 +159,15 @@ def chart(exchange: str, symbol: str, timeframe: str = Query("1d", pattern="^(1d
     out["signals"] = [{"id": s.id, "strategy": s.strategy, "state": s.state, "action": s.action,
                        "stop_loss": s.payload.get("stop_loss"), "targets": s.payload.get("targets"),
                        "entry": s.payload.get("entry"), "timeframe": s.payload.get("timeframe")} for s in sigs]
+    prov = active_provider()
+    q = prov.quote(symbol, exchange)
+    raw = prov.ltp(symbol, exchange) if hasattr(prov, "ltp") else None
+    out["quote"] = None if q is None else {
+        "last_price": q.last_price, "prev_close": q.prev_close, "change_pct": round(q.change_pct, 3),
+        "market_open": q.market_open, "status": q.status.value,
+        "last_trade_time": (raw or {}).get("last_trade_time"),
+        "note": ("Last price from the broker quote - after the close this is the exchange's official closing price "
+                 "(NSE closing auction), which can differ from the last 5-minute candle")}
     return out
 
 

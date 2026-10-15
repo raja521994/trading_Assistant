@@ -132,6 +132,26 @@ def test_kill_switch_blocks_orders(client):
         client.post("/api/risk/kill-switch", json={"on": False})
 
 
+def test_ingest_self_repairs_misaligned_intraday_bars(client):
+    from sqlalchemy import select
+
+    from app.data.ingest import ingest
+    from app.db import session_scope
+    from app.models import Candle, Instrument
+    from app.providers.registry import active_provider
+
+    with session_scope() as s:
+        inst = s.scalars(select(Instrument).where(Instrument.provider == "sample", Instrument.symbol == "TCS")).first()
+        last = s.scalar(select(Candle.ts).where(Candle.instrument_id == inst.id, Candle.timeframe == "5m")
+                        .order_by(Candle.ts.desc()))
+        s.add(Candle(instrument_id=inst.id, timeframe="5m", ts=last - 299, open=1, high=1, low=1, close=1, volume=1))
+    with session_scope() as s:
+        ingest(s, active_provider())
+    with session_scope() as s:
+        bad = s.scalars(select(Candle).where(Candle.timeframe == "5m", (Candle.ts % 300) != 0)).all()
+        assert bad == []
+
+
 def test_assistant_uses_computed_facts(client):
     r = client.post("/api/assistant/ask", json={"question": "What changed in the current market regime?"}).json()
     assert r["intent"] == "regime" and r["answer"]["facts"] and r["provider"] == "template"

@@ -17,6 +17,7 @@ interface ChartResp {
   strategy_trades: { entry_ts: string; exit_ts: string; direction: string; entry_price: number; exit_price: number; exit_reason: string; net_pnl: number; r_multiple: number }[];
   signals: { id: number; strategy: string; state: string; action: string; stop_loss: number | null; targets: number[] | null; entry: { reference: number } | null; timeframe: string }[];
   quality: { status: string; freshness: string; issues: string[] };
+  quote: { last_price: number; prev_close: number; change_pct: number; market_open: boolean; status: string; last_trade_time: string | null; note: string } | null;
 }
 interface Strategy { id: string; name: string; timeframe: string }
 
@@ -72,6 +73,7 @@ export default function Charts() {
   const levels: PriceLevel[] = useMemo(() => {
     if (!d) return [];
     const out: PriceLevel[] = [];
+    if (d.quote) out.push({ price: d.quote.last_price, color: "#eab308", title: d.quote.market_open ? "LTP" : "Close (official)" });
     if (on.levels) d.levels.forEach((l) => out.push({ price: l.price, color: l.kind === "support" ? "#15803d" : "#b91c1c", title: l.kind === "support" ? "S" : "R", dashed: true }));
     const sig = d.signals.find((s) => s.timeframe === tf && ["SETUP", "TRIGGERED"].includes(s.state));
     if (on.signal && sig) {
@@ -109,6 +111,14 @@ export default function Charts() {
           {tfStrategies.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
         </select>
         {d && <DataLabel label={d.data_label} />}
+        {d?.quote && (
+          <span className="text-sm" title={d.quote.note}>
+            <span className="text-slate-400">{d.quote.market_open ? "LTP" : "Official close"} </span>
+            <span className="num font-semibold text-slate-100">{inr(d.quote.last_price)}</span>{" "}
+            <span className={clsx("num", d.quote.change_pct >= 0 ? "text-up" : "text-down")}>{d.quote.change_pct >= 0 ? "+" : ""}{num(d.quote.change_pct)}%</span>
+            {d.quote.last_trade_time && <span className="text-[10px] text-slate-500"> · last trade {d.quote.last_trade_time}</span>}
+          </span>
+        )}
         {d && <span className="text-xs text-slate-500">{d.name} · data {d.quality.status}/{d.quality.freshness}{d.time_note ? ` · ${d.time_note}` : ""}</span>}
       </div>
       <div className="flex flex-wrap gap-3 text-xs">

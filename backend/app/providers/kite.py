@@ -145,6 +145,7 @@ class KiteProvider(MarketDataProvider):
         self._quotes_at = 0.0
         self._last_ok: datetime | None = None
         self._latency: float | None = None
+        self._final_refresh_done: date | None = None
 
     # ---------------- session ----------------
     def token_expired(self) -> bool:
@@ -249,7 +250,7 @@ class KiteProvider(MarketDataProvider):
                 continue
             tokens[("NSE", sym)] = int(r["instrument_token"])
             keys[("NSE", sym)] = f"NSE:{sym}"
-            infos.append(InstrumentInfo(sym, "NSE", (r.get("name") or sym).title(), "EQ", DEFAULT_UNIVERSE.get(sym),
+            infos.append(InstrumentInfo(sym, "NSE", r.get("name") or sym, "EQ", DEFAULT_UNIVERSE.get(sym),
                                         int(float(r.get("lot_size") or 1)), float(r.get("tick_size") or 0.05),
                                         r["instrument_token"]))
         for sym, (exch, ts, name) in INDEX_SYMBOLS.items():
@@ -272,6 +273,20 @@ class KiteProvider(MarketDataProvider):
 
     def session_state(self, now: datetime) -> str:
         return self._calendar().session_state(now)
+
+    def needs_refresh(self, timeframe: str) -> bool:
+        """After the close, NSE's closing-auction price (the official close shown in the Kite app) arrives
+        ~15:45-16:00 IST: refresh today's daily bar every ingest until 16:05, then once more (final pass) on the
+        first ingest after that - including after a restart later in the evening."""
+        now = self.clock()
+        if timeframe != "1d" or not self._calendar().is_trading_day(now.date()) or now.time() < SESSION_CLOSE:
+            return False
+        if now.time() < time(16, 5):
+            return True
+        if self._final_refresh_done != now.date():
+            self._final_refresh_done = now.date()
+            return True
+        return False
 
     def expected_last_bar(self, timeframe: str, now: datetime | None = None) -> datetime | None:
         return self._calendar().expected_last_bar(timeframe, now or self.clock())
@@ -303,6 +318,50 @@ class KiteProvider(MarketDataProvider):
             cur = nxt + timedelta(seconds=1)
         return pd.concat(frames) if frames else _parse_candles([])
 
+    def _official_close_today(self, symbol: str, exchange: str, df: pd.DataFrame, now: datetime) -> pd.DataFrame:
+        """Today's historical day candle is provisional until Zerodha's EOD update: NSE equities close via the
+        closing-auction session (price published ~15:45-16:00), which is what the Kite app displays. After the
+        session, replace today's bar with the live quote (day OHLC from the quote, close = last_price)."""
+        today = pd.Timestamp(now.date()).tz_localize(IST)
+        if today not in df.index or now.time() < SESSION_CLOSE:
+            return df
+        if _time.monotonic() - self._quotes_at > 30:
+            try:
+                self._refresh_quotes()
+            except KiteError:
+                return df
+        key = self._kite_keys.get((exchange, symbol))
+        q = self._quotes.get(key) if key else None
+        if not q or q.get("last_price") is None:
+            return df
+        ohlc = q.get("ohlc") or {}
+        close = float(q["last_price"])
+        row = df.loc[today].copy()
+        row["open"] = float(ohlc.get("open") or row["open"])
+        row["high"] = max(float(ohlc.get("high") or row["high"]), close)
+        row["low"] = min(float(ohlc.get("low") or row["low"]), close)
+        row["close"] = close
+        if q.get("volume"):
+            row["volume"] = float(q["volume"])
+        df = df.copy()
+        df.loc[today] = row
+        return df
+
+    def ltp(self, symbol: str, exchange: str) -> dict[str, Any] | None:
+        """Raw Kite quote fields for display (same numbers the Kite app shows)."""
+        if not self.enabled:
+            return None
+        if _time.monotonic() - self._quotes_at > 3.0:
+            try:
+                self._refresh_quotes()
+            except KiteError:
+                pass
+        q = self._quotes.get(self._kite_keys.get((exchange, symbol), ""))
+        if not q:
+            return None
+        return {"last_price": q.get("last_price"), "prev_close": (q.get("ohlc") or {}).get("close"),
+                "last_trade_time": q.get("last_trade_time"), "ohlc": q.get("ohlc"), "volume": q.get("volume")}
+
     def candles(self, symbol: str, exchange: str, timeframe: str, start: datetime | None = None,
                 end: datetime | None = None) -> pd.DataFrame:
         if not self._tokens:
@@ -319,12 +378,18 @@ class KiteProvider(MarketDataProvider):
             if len(df):
                 df.index = pd.DatetimeIndex([pd.Timestamp(t.date()).tz_localize(IST) for t in df.index], name="ts")
                 df = df[~df.index.duplicated(keep="last")]
+                df = self._official_close_today(symbol, exchange, df, now)
         elif timeframe == "5m":
             default_start = datetime.combine(today - timedelta(days=self.intraday_days), time(9, 15))
             s = pd.Timestamp(start).tz_convert(IST).tz_localize(None).to_pydatetime() if start is not None \
                 else default_start
+            # Kite anchors candles to the `from` time, so always request from an exact 5-minute boundary.
+            s = s.replace(second=0, microsecond=0)
+            s = s - timedelta(minutes=s.minute % BAR_MINUTES)
             df = self._historical(token, "5minute", s, naive_now)
             if len(df):
+                aligned = (df.index.second == 0) & (df.index.minute % BAR_MINUTES == 0)
+                df = df[aligned]
                 t = df.index.time
                 df = df[(t >= SESSION_OPEN) & (t < SESSION_CLOSE)]
                 df = df[df.index + pd.Timedelta(minutes=BAR_MINUTES) <= pd.Timestamp(now)]  # completed bars only

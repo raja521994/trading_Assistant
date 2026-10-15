@@ -71,7 +71,7 @@ def ingest_and_rescan() -> None:
     with _lock, session_scope() as s:
         stats = ingest(s, active_provider())
         status["last_ingest"] = {**stats, "at": int(time.time())}
-    if stats["candles_inserted"]:
+    if stats.get("candles_written", stats["candles_inserted"]):
         with _lock, session_scope() as s:
             r = run_scan_and_persist(s)
             status["last_scan"] = {"at": int(time.time()), "count": len(r["recommendations"])}

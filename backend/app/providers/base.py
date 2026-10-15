@@ -115,3 +115,7 @@ class MarketDataProvider(ABC):
         from .calendar import market_session_state
 
         return market_session_state(now)
+
+    def needs_refresh(self, timeframe: str) -> bool:
+        """True when already-stored recent bars may still change (re-fetched even if 'up to date')."""
+        return False
