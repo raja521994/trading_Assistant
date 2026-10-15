@@ -61,6 +61,9 @@ def validate_candles(df: pd.DataFrame, timeframe: str, expected_last: datetime |
     freshness = "UNKNOWN"
     if expected_last is not None:
         exp = pd.Timestamp(expected_last)
+        if timeframe != "1d":
+            # Grace of two bars covers the ingest interval right after a bar completes.
+            exp = exp - pd.Timedelta(minutes=10)
         if last_ts < exp:
             freshness = "STALE"
             issues.append(f"Latest bar {last_ts.isoformat()} is older than expected {exp.isoformat()}")

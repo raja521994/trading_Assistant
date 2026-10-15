@@ -56,7 +56,7 @@ class Signal(Base):
     expires_at: Mapped[int] = mapped_column(BigInteger)
     updated_at: Mapped[int] = mapped_column(BigInteger)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON)
-    outcome: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    outcome: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     __table_args__ = (Index("ix_signals_strategy_symbol", "strategy", "exchange", "symbol"),)
 
 

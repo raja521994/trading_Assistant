@@ -99,13 +99,15 @@ def check_trade(p: TradeProposal, state: PortfolioState, cfg: RiskConfig) -> Ris
 
     add("kill_switch", not cfg.kill_switch, "Kill switch is ON - all new trades blocked" if cfg.kill_switch
         else "Kill switch off")
-    add("quantity", p.qty >= 1, f"Quantity {p.qty} must be at least 1")
+    add("quantity", p.qty >= 1, f"Quantity {p.qty} (minimum 1)")
     long = p.direction == "LONG"
     stop_ok = (p.stop < p.entry) if long else (p.stop > p.entry)
-    add("stop_side", stop_ok, f"Stop {p.stop:.2f} must be {'below' if long else 'above'} entry {p.entry:.2f}")
+    add("stop_side", stop_ok, f"Stop {p.stop:.2f} must be {'below' if long else 'above'} entry {p.entry:.2f}"
+        if not stop_ok else f"Stop {p.stop:.2f} on the correct side of entry {p.entry:.2f}")
     if p.target is not None:
         tgt_ok = (p.target > p.entry) if long else (p.target < p.entry)
-        add("target_side", tgt_ok, f"Target {p.target:.2f} must be {'above' if long else 'below'} entry")
+        add("target_side", tgt_ok, f"Target {p.target:.2f} must be {'above' if long else 'below'} entry"
+            if not tgt_ok else f"Target {p.target:.2f} on the correct side of entry")
         risk = abs(p.entry - p.stop)
         rr = abs(p.target - p.entry) / risk if risk > 0 else 0.0
         add("risk_reward", rr >= cfg.min_risk_reward, f"Risk-reward {rr:.2f} vs minimum {cfg.min_risk_reward:.2f}")
@@ -130,7 +132,8 @@ def check_trade(p: TradeProposal, state: PortfolioState, cfg: RiskConfig) -> Ris
     add("open_positions", len(state.open_positions) < cfg.max_open_positions,
         f"Open positions {len(state.open_positions)} vs limit {cfg.max_open_positions}")
     add("duplicate", all(o.symbol != p.symbol for o in state.open_positions),
-        f"An open paper position in {p.symbol} already exists (duplicate/correlated exposure)")
+        f"An open paper position in {p.symbol} already exists (duplicate/correlated exposure)"
+        if any(o.symbol == p.symbol for o in state.open_positions) else f"No existing open position in {p.symbol}")
 
     if p.sector:
         sec_val = sum(o.value for o in state.open_positions if o.sector == p.sector) + value
@@ -156,7 +159,8 @@ def check_trade(p: TradeProposal, state: PortfolioState, cfg: RiskConfig) -> Ris
             "Short selling is only allowed intraday in the cash segment" if p.mode != "intraday"
             else "Intraday shorts disabled in risk settings")
     if p.mode != "intraday":
-        add("overnight", cfg.allow_overnight, "Overnight positions disabled in risk settings")
+        add("overnight", cfg.allow_overnight, "Overnight positions disabled in risk settings" if not cfg.allow_overnight
+            else "Overnight positions allowed")
 
     add("event_risk", False, "Event/earnings calendar not connected - event risk UNKNOWN", "warn")
     approved = all(c.passed for c in checks if c.severity == "block")

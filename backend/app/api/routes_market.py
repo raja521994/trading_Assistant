@@ -61,6 +61,16 @@ def overview(db: Session = Depends(get_db)) -> dict[str, Any]:
     return market_overview(db)
 
 
+@router.get("/quote/{exchange}/{symbol}")
+def quote(exchange: str, symbol: str) -> dict[str, Any]:
+    q = active_provider().quote(symbol, exchange)
+    if q is None:
+        raise HTTPException(404, f"No quote for {exchange}:{symbol}")
+    return {"symbol": symbol, "exchange": exchange, "last": q.last_price, "prev_close": q.prev_close,
+            "change_pct": round(q.change_pct, 3), "ts": q.ts.isoformat(), "market_open": q.market_open,
+            "data_label": q.status.value}
+
+
 @router.get("/instruments")
 def instruments(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
     return [{"symbol": i.symbol, "exchange": i.exchange, "name": i.name, "type": i.instrument_type,
@@ -137,8 +147,10 @@ def chart(exchange: str, symbol: str, timeframe: str = Query("1d", pattern="^(1d
                 markers.append({"time": _t(et, intraday), "position": "belowBar" if long else "aboveBar",
                                 "color": "#22c55e" if long else "#ef4444", "shape": "arrowUp" if long else "arrowDown",
                                 "text": f"{'BUY' if long else 'SELL'} {t.entry_price}"})
+                if t.exit_reason == "End of test period":
+                    continue  # position still open at the last bar
                 markers.append({"time": _t(xt, intraday), "position": "aboveBar" if long else "belowBar",
-                                "color": "#a3a3a3", "shape": "circle", "text": f"Exit {t.exit_reason}"})
+                                "color": "#a3a3a3", "shape": "circle", "text": f"Exit {t.exit_reason.split(' ')[0].lower()}"})
             markers.sort(key=lambda m: m["time"])
     out["markers"] = markers
     out["strategy_trades"] = trades

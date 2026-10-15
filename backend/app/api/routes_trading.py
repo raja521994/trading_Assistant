@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..ai.assistant import SUGGESTED, answer, llm_status
+from ..ai.assistant import answer, llm_status, suggested_questions
 from ..backtest.service import BacktestRequest, latest_evidence, run_backtest
 from ..config import get_settings
 from ..data.coverage import coverage_matrix
@@ -190,7 +190,7 @@ def performance(db: Session = Depends(get_db)) -> dict[str, Any]:
         a["trades"] += 1
         a["net_pnl"] += t.net_pnl or 0.0
         a["wins"] += 1 if (t.net_pnl or 0) > 0 else 0
-    sigs = db.scalars(select(Signal).where(Signal.outcome.is_not(None))).all()
+    sigs = [s for s in db.scalars(select(Signal).where(Signal.outcome.is_not(None))).all() if s.outcome]
     outcomes: dict[tuple[str, str], dict[str, Any]] = {}
     for s in sigs:
         o = outcomes.setdefault((s.origin, s.strategy), {"origin": s.origin, "strategy": s.strategy, "count": 0,
@@ -249,7 +249,7 @@ def ask(body: AskBody, db: Session = Depends(get_db)) -> dict[str, Any]:
 
 @router.get("/assistant/meta")
 def assistant_meta() -> dict[str, Any]:
-    return {"suggested": SUGGESTED, "llm": llm_status(),
+    return {"suggested": suggested_questions(), "llm": llm_status(),
             "guardrails": ["Answers are built from stored data, scanner output, risk calculations and backtests.",
                            "LLM output (if configured) may only interpret supplied facts; any new number causes rejection.",
                            "The assistant cannot place, modify or cancel orders and cannot change risk limits."]}

@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root { height: 100%; }
+body { font-feature-settings: "tnum" 1; }
+
+@layer components {
+  .panel { @apply bg-ink-900 border border-ink-700 rounded-md; }
+  .panel-h { @apply flex items-center justify-between px-3 py-2 border-b border-ink-700 text-xs font-semibold uppercase tracking-wider text-slate-400; }
+  .btn { @apply inline-flex items-center gap-1 rounded px-2.5 py-1 text-xs font-medium border border-ink-600 bg-ink-800 hover:bg-ink-700 disabled:opacity-40 disabled:cursor-not-allowed; }
+  .btn-primary { @apply border-sky-600 bg-sky-700/60 hover:bg-sky-600/70 text-white; }
+  .btn-danger { @apply border-red-700 bg-red-900/50 hover:bg-red-800/60 text-red-100; }
+  .input { @apply bg-ink-850 border border-ink-600 rounded px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-sky-600; }
+  .tbl { @apply w-full text-xs; }
+  .tbl th { @apply text-left font-medium text-slate-400 px-2 py-1.5 border-b border-ink-700 whitespace-nowrap sticky top-0 bg-ink-900; }
+  .tbl td { @apply px-2 py-1.5 border-b border-ink-800 whitespace-nowrap; }
+  .tbl tr:hover td { @apply bg-ink-850; }
+  .num { @apply font-mono tabular-nums; }
+  .label { @apply text-[10px] uppercase tracking-wider text-slate-500; }
+}

@@ -94,8 +94,7 @@ def test_backtest_endpoint(client):
 
 
 def _manual_order(client, key, stop_frac=0.97, target_frac=1.06, symbol="HDFCBANK"):
-    c = client.get(f"/api/chart/NSE/{symbol}", params={"bars": 60}).json()
-    px = c["candles"][-1]["close"]
+    px = client.get(f"/api/quote/NSE/{symbol}").json()["last"]
     return client.post("/api/paper/orders", json={"symbol": symbol, "exchange": "NSE", "direction": "LONG",
                                                   "mode": "swing", "stop": round(px * stop_frac, 2),
                                                   "target": round(px * target_frac, 2), "idempotency_key": key})
@@ -116,6 +115,12 @@ def test_paper_trading_flow(client):
     assert closed["status"] == "CLOSED" and closed["net_pnl"] is not None
     perf = client.get("/api/performance").json()
     assert perf["risk_breaches"] and perf["strategy_attribution"]
+    from app.db import SessionLocal
+    from app.models import Signal
+
+    with SessionLocal() as s:
+        resolved = sum(1 for sig in s.query(Signal).all() if sig.outcome)
+    assert sum(o["count"] for o in perf["recommendation_outcomes"]) == resolved
 
 
 def test_kill_switch_blocks_orders(client):

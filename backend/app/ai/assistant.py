@@ -115,9 +115,7 @@ def answer(session: Session, question: str, signal_id: int | None = None) -> dic
         sig = _signal_for(session, symbol, signal_id)
         if sig is None:
             intent = "no_signal"
-            exp = Explanation(facts=[f"{symbol} has no recorded scanner signal."],
-                              interpretation=["The scanner only lists instruments where a strategy's entry or "
-                                              "watch conditions are met on validated data."])
+            exp = _no_signal(session, symbol)
         else:
             rec = {**sig.payload, "signal_id": sig.id, "state": sig.state}
             full = explain_recommendation(rec)
@@ -151,7 +149,44 @@ def answer(session: Session, question: str, signal_id: int | None = None) -> dic
     if intent not in ("help", "no_signal"):
         exp = llm.interpret(q, exp)
     return {"question": q, "intent": intent, "symbol": symbol, "answer": exp.to_dict(), "provider": exp.provider,
-            "suggested": SUGGESTED}
+            "suggested": suggested_questions()}
+
+
+def suggested_questions() -> list[str]:
+    """Suggestions that reference symbols actually present in the latest scan."""
+    from ..signals.engine import last_scan
+
+    recs = last_scan().get("recommendations", [])
+    actionable = [r for r in recs if r["action"] in ("BUY", "SELL")]
+    conflicted = [r for r in recs if r.get("conflicting_evidence")]
+    out = list(SUGGESTED)
+    if actionable:
+        out[0] = f"Why is {actionable[0]['symbol']} appearing in the scanner?"
+        out[3] = f"What is the downside risk if the stop-loss is reached on {actionable[-1]['symbol']}?"
+    if recs:
+        out[1] = f"Which strategy generated the setup on {recs[0]['symbol']}?"
+    if conflicted:
+        out[2] = f"What evidence contradicts the signal on {conflicted[0]['symbol']}?"
+    elif actionable:
+        out[2] = f"What evidence contradicts the signal on {actionable[0]['symbol']}?"
+    return out
+
+
+def _no_signal(session: Session, symbol: str | None) -> Explanation:
+    from ..quant.universe import features, last_row
+
+    facts = [f"{symbol} has no active scanner signal from any of the {len(load_specs())} strategies."]
+    imap = instrument_map(session)
+    key = next((k for k in imap if k[1] == symbol), None)
+    data = load_universe(session, "1d")
+    if key and key in data:
+        f = last_row(features(key, data[key]))
+        ts = data[key].index[-1].isoformat()
+        facts.append(f"Latest daily bar {ts}: close {f['close']:.2f}, EMA50 {f['ema50']:.2f}, EMA200 "
+                     f"{f['ema200']:.2f}, RSI(14) {f['rsi14']:.1f}, ADX(14) {f['adx14']:.1f}, ATR% {f['atr_pct']:.2f}.")
+    return Explanation(facts=facts, interpretation=[
+        "The scanner only lists instruments where a strategy's entry or watch conditions are met on validated "
+        "data; none are met for this symbol on the latest bar."], sources=[f"universe:daily:{symbol}"])
 
 
 def _regime(session: Session) -> Explanation:
