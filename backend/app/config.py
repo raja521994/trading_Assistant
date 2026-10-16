@@ -56,8 +56,13 @@ class Settings(BaseSettings):
 
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
     background_jobs: bool = True
-    quote_refresh_seconds: int = 5
+    quote_refresh_seconds: int = 2
     ingest_refresh_seconds: int = 60
+    # Realtime feed: "auto" (Kite WebSocket when logged in, simulated ticks for sample data),
+    # "replay" (replay stored 5-minute bars as ticks - for testing outside market hours) or "off".
+    realtime_mode: str = "auto"
+    replay_date: str | None = None  # YYYY-MM-DD; default = last stored session
+    replay_speed: float = 60.0
 
     @field_validator("database_url")
     @classmethod

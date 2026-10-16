@@ -7,11 +7,12 @@ import json
 from typing import Any
 
 import pandas as pd
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..realtime.service import service as realtime
 from ..ai.assistant import llm_status
 from ..backtest.engine import BTConfig, run_portfolio
 from ..config import get_settings
@@ -40,6 +41,17 @@ DISCLAIMERS = [
 @router.get("/health")
 def health() -> dict[str, Any]:
     return {"status": "ok", "time": now_ist().isoformat()}
+
+
+@router.websocket("/ws")
+async def live_ws(websocket: WebSocket) -> None:
+    """Single browser connection for live ticks, candle updates and feed status (no polling)."""
+    await realtime.handle_client(websocket)
+
+
+@router.get("/realtime/health")
+def realtime_health() -> dict[str, Any]:
+    return realtime.health()
 
 
 @router.get("/meta")

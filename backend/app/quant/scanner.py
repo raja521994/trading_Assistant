@@ -21,7 +21,10 @@ from ..risk.sizing import position_size
 from .regime import classify_regime
 from .scoring import composite, load_weights, score_components
 from .strategies.base import Setup, Strategy, all_strategy_ids, get_strategy
+from ..realtime.service import service as realtime
 from .universe import features, instrument_map, last_row, load_benchmark, load_universe, prepared_with_arrays
+from ..signals.setup_fsm import (ACTIVE, EXPIRED, INVALIDATED, SETUP, TRIGGERED, Plan, on_bar_close, on_next_open,
+                                 trigger_level)
 
 log = logging.getLogger(__name__)
 IST = "Asia/Kolkata"
@@ -42,36 +45,51 @@ def _epoch(d: date, hh: int, mm: int) -> int:
 
 
 def evaluate_latest(strat: Strategy, a: dict[str, list]) -> dict[str, Any] | None:
+    """Most recent signal within the setup window, advanced through the shared state machine over every closed bar
+    after it (same rules as the backtester). Returns SETUP / TRIGGERED / ACTIVE, WATCH, or None if resolved."""
     n = len(a["close"])
     last = n - 1
     if last < strat.warmup + 1:
         return None
-    for j in range(last, max(last - LOOKBACK_BARS, strat.warmup), -1):
+    window = strat.expiry_bars + LOOKBACK_BARS
+    for j in range(last, max(last - window, strat.warmup), -1):
         setup = strat.entry(a, j)
         if setup is None:
             continue
         if strat.intraday and a["_date"][j] != a["_date"][last]:
             break
-        if j == last:
-            return {"state": "SETUP", "setup": setup, "signal_i": j, "entry_ref": a["close"][last], "entry_i": None}
         long = setup.direction == "LONG"
-        fill = a["open"][j + 1]
-        if (long and fill <= setup.stop) or (not long and fill >= setup.stop):
-            return None
-        risk = abs(fill - setup.stop)
-        target = None if not setup.target_r else (fill + setup.target_r * risk if long else fill - setup.target_r * risk)
+        plan = Plan(setup.direction, trigger_level(strat.trigger_rule, setup.direction, a["high"][j], a["low"][j],
+                                                   a["close"][j]), setup.stop, strat.expiry_bars)
+        entry_i = trig_i = None
+        target = None
         for k in range(j + 1, n):
-            if (long and a["low"][k] <= setup.stop) or (not long and a["high"][k] >= setup.stop):
+            if plan.state == SETUP:
+                if on_bar_close(plan, a["high"][k], a["low"][k], a["close"][k]) == TRIGGERED:
+                    trig_i = k
+            elif plan.state == TRIGGERED:
+                if on_next_open(plan, a["open"][k]) == ACTIVE:
+                    entry_i = k
+                    risk = abs(plan.fill - setup.stop)
+                    target = None if not setup.target_r else (
+                        plan.fill + setup.target_r * risk if long else plan.fill - setup.target_r * risk)
+            if plan.state == ACTIVE:
+                if (long and a["low"][k] <= setup.stop) or (not long and a["high"][k] >= setup.stop):
+                    return None  # stopped out -> resolved
+                if target is not None and ((long and a["high"][k] >= target) or (not long and a["low"][k] <= target)):
+                    return None  # target reached -> resolved
+                if k < last and strat.exit(a, k, setup.direction):
+                    return None
+                if strat.intraday and k < last and a["_date"][k + 1] != a["_date"][k]:
+                    return None
+            if plan.state in (INVALIDATED, EXPIRED):
                 return None
-            if target is not None and ((long and a["high"][k] >= target) or (not long and a["low"][k] <= target)):
-                return None
-            if k < last and strat.exit(a, k, setup.direction):
-                return None
-        return {"state": "TRIGGERED", "setup": setup, "signal_i": j, "entry_ref": fill, "entry_i": j + 1}
+        return {"state": plan.state, "setup": setup, "signal_i": j, "plan": plan, "trigger_i": trig_i,
+                "entry_i": entry_i, "entry_ref": plan.fill if plan.fill is not None else plan.trigger}
     w = strat.watch(a, last)
     if w:
         return {"state": "WATCH", "setup": None, "signal_i": last, "entry_ref": a["close"][last], "entry_i": None,
-                "watch_reason": w}
+                "watch_reason": w, "plan": None, "trigger_i": None}
     return None
 
 
@@ -98,8 +116,8 @@ def _holding(strat: Strategy, setup: Setup | None) -> str:
 def build_recommendation(strat: Strategy, key: tuple[str, str], inst: Any, cand: dict[str, Any], p: pd.DataFrame,
                          a: dict[str, list], daily_snap: dict[str, Any], bench_ret_63: float | None,
                          evidence: dict[str, Any] | None, cfg: RiskConfig, weights: dict[str, float],
-                         regime: dict[str, Any] | None, dq: dict[str, Any], now: datetime, data_label: str
-                         ) -> dict[str, Any]:
+                         regime: dict[str, Any] | None, dq: dict[str, Any], now: datetime, data_label: str,
+                         freshness: dict[str, Any] | None = None) -> dict[str, Any]:
     exch, sym = key
     last = len(a["close"]) - 1
     setup: Setup | None = cand["setup"]
@@ -120,13 +138,31 @@ def build_recommendation(strat: Strategy, key: tuple[str, str], inst: Any, cand:
     stop = targets = rr = None
     sizing = costs = None
     risk_level = "N/A"
+    stop_info: dict[str, Any] | None = None
+    target_info: dict[str, Any] | None = None
     if setup:
         stop = round(setup.stop, 2)
         risk_u = abs(entry_ref - setup.stop)
+        stop_pct = risk_u / entry_ref * 100 if entry_ref else 0.0
+        cap = cfg.max_stop_pct(strat.meta.modes[0])
+        stop_info = {"stop_pct": round(stop_pct, 2), "cap_pct": cap, "atr14": None if atr != atr else round(atr, 2),
+                     "atr_multiple": None if not atr or atr != atr else round(risk_u / atr, 2),
+                     "within_cap": stop_pct <= cap,
+                     "rule": f"{strat.meta.name} stop rule (ATR / structure); max {cap}% for {strat.meta.modes[0]} mode"}
+        # Targets from the strategy's historical (walk-forward OOS) favourable-excursion distribution, not a fixed R.
+        mfe = (evidence or {}).get("mfe_r_quantiles") or {}
         targets = []
-        if setup.target_r:
+        if mfe.get("p50") and mfe.get("n", 0) >= 20:
+            for q in ("p50", "p75"):
+                if mfe.get(q):
+                    targets.append(round(entry_ref + mfe[q] * risk_u if long else entry_ref - mfe[q] * risk_u, 2))
+            rr = round(float(mfe["p50"]), 2)
+            target_info = {"method": "MFE quantiles of walk-forward OOS trades", "p50_r": mfe["p50"],
+                           "p75_r": mfe.get("p75"), "n_trades": mfe["n"]}
+        elif setup.target_r:
             targets = [round(entry_ref + setup.target_r * risk_u if long else entry_ref - setup.target_r * risk_u, 2)]
             rr = round(float(setup.target_r), 2)
+            target_info = {"method": f"strategy rule {setup.target_r}R (MFE history not available yet)"}
         sz = position_size(cfg.account_equity, entry_ref, setup.stop, cfg.risk_per_trade_pct,
                            cfg.max_alloc_per_instrument_pct, lot_size=inst.lot_size if inst else 1,
                            max_leverage=cfg.max_leverage)
@@ -182,16 +218,26 @@ def build_recommendation(strat: Strategy, key: tuple[str, str], inst: Any, cand:
             if rr is not None and rr < cfg.min_risk_reward:
                 action = "WAIT"
                 action_reasons.append(f"Risk-reward {rr} below minimum {cfg.min_risk_reward}")
-            if state == "TRIGGERED" and setup:
+            if state == "ACTIVE" and setup:
                 risk_u = abs(entry_ref - setup.stop)
                 moved = (close - entry_ref) / risk_u if long else (entry_ref - close) / risk_u
                 if moved > 1.0:
                     action = "WAIT"
-                    action_reasons.append(f"Price already {moved:.1f}R beyond the entry reference - late entry not advised")
+                    action_reasons.append(f"Entry filled at {entry_ref:.2f}; price already {moved:.1f}R beyond it - "
+                                          "late entry not advised")
+            if stop_info and not stop_info["within_cap"]:
+                action = "NO TRADE"
+                action_reasons.append(f"SKIP: stop {stop_info['stop_pct']}% away exceeds the {stop_info['cap_pct']}% cap "
+                                      f"for {strat.meta.modes[0]} mode")
         if not action_reasons:
             action_reasons.append("All entry rules met, risk checks on sizing/liquidity passed, no major conflicts")
 
     gates = evaluate_gates(strat, direction_code, evidence, regime, cfg)
+    fr = freshness or {}
+    gates["freshness"] = {"name": "Data freshness", "applies": True, "passed": not fr.get("stale", False),
+                          "detail": (f"Live data stale: last tick {fr.get('tick_age_s')} s ago (> 5 s in market hours)"
+                                     if fr.get("stale") else f"Last tick {fr.get('tick_age_s')} s ago"
+                                     if fr.get("tick_age_s") is not None else "No live tick yet (outside session or REST data)")}
     if action in ("BUY", "SELL"):
         failed = [g for g in gates.values() if g["applies"] and not g["passed"]]
         if failed:
@@ -203,16 +249,25 @@ def build_recommendation(strat: Strategy, key: tuple[str, str], inst: Any, cand:
     if strat.intraday:
         h, m = (int(x) for x in str(strat.params.get("exit_time", "15:15")).split(":"))
         expires = _epoch(last_ts.date(), h, m)
-    elif state == "TRIGGERED":
+    elif state == "ACTIVE":
         entry_date = p.index[cand["entry_i"]].date()
         expires = _epoch(_add_weekdays(entry_date, int(setup.max_hold_bars) if setup else 10), 15, 30)
     else:
-        expires = _epoch(_add_weekdays(last_ts.date(), 1), 15, 30)
+        expires = _epoch(_add_weekdays(last_ts.date(), strat.expiry_bars), 15, 30)
 
-    entry_note = ("Signal on the latest completed bar; entry reference is the NEXT bar's open"
-                  if state == "SETUP" else
-                  f"Entry reference filled at the open of {p.index[cand['entry_i']].isoformat()}"
-                  if state == "TRIGGERED" else "No entry until the setup completes")
+    plan = cand.get("plan")
+    trig = plan.trigger if plan is not None else None
+    if state == "SETUP":
+        entry_note = (f"Waiting for a closed bar {'at/above' if long else 'at/below'} trigger {trig:.2f}; entry at the "
+                      "following bar's open")
+    elif state == "TRIGGERED":
+        entry_note = (f"Trigger {trig:.2f} crossed on the close of {p.index[cand['trigger_i']].isoformat()}; entry at the "
+                      "next bar's open")
+    elif state == "ACTIVE":
+        entry_note = (f"Filled at {plan.fill:.2f} (open of {p.index[cand['entry_i']].isoformat()}) after trigger "
+                      f"{trig:.2f}; now {close:.2f}")
+    else:
+        entry_note = "No entry until the setup completes"
     zone = None
     if setup and atr == atr:
         zone = ([round(entry_ref - 0.1 * atr, 2), round(entry_ref + 0.25 * atr, 2)] if long
@@ -230,9 +285,12 @@ def build_recommendation(strat: Strategy, key: tuple[str, str], inst: Any, cand:
         "reference_price": round(close, 2),
         "direction": "bullish" if direction_code == "LONG" else "bearish" if direction_code == "SHORT" else "neutral",
         "direction_code": direction_code, "state": state, "action": action, "action_reasons": action_reasons,
-        "entry": {"reference": round(entry_ref, 2), "zone": zone, "note": entry_note},
+        "entry": {"reference": round(entry_ref, 2), "zone": zone, "note": entry_note,
+                  "trigger": None if trig is None else round(trig, 2),
+                  "filled": None if plan is None or plan.fill is None else round(plan.fill, 2)},
+        "stop_info": stop_info, "target_info": target_info,
         "stop_loss": stop, "invalidation": setup.invalidation if setup else "n/a (watch only)",
-        "targets": targets or [], "target_note": None if targets else (
+        "targets": targets or [], "target_note": (target_info or {}).get("method") if targets else (
             "Trailing / rule-based exit - no fixed target" if setup else None),
         "risk_reward": rr, "holding_period": _holding(strat, setup), "liquidity": liq,
         "position_size": sizing, "indicators": snap,
@@ -249,8 +307,67 @@ def build_recommendation(strat: Strategy, key: tuple[str, str], inst: Any, cand:
                                  else "Live order execution is disabled in this build - research and paper trading only"),
         "executable": False,
         "expires_at": pd.Timestamp(expires, unit="s", tz="UTC").tz_convert(IST).isoformat(),
-        "expires_at_epoch": expires, "data_quality": dq, "gates": gates,
+        "expires_at_epoch": expires, "data_quality": dq, "gates": gates, "live": fr,
+        **_final_score(comp["score"], action, gates, regime, direction_code),
     }
+
+
+def regime_multiplier(regime: dict[str, Any] | None, direction: str) -> float:
+    up = benchmark_trend_up(regime)
+    if up is None:
+        return 1.0
+    if direction == "SHORT":
+        return 1.0 if not up else 0.6
+    return 1.0 if up else 0.5
+
+
+def _final_score(score: float, action: str, gates: dict[str, Any], regime: dict[str, Any] | None,
+                 direction: str) -> dict[str, Any]:
+    """final = composite x regime multiplier x gate multiplier (0 if any applicable gate fails or not actionable)."""
+    blocked_by = [g["name"] for g in gates.values() if g.get("applies") and not g.get("passed")]
+    gate_mult = 0.0 if blocked_by or action not in ("BUY", "SELL") else 1.0
+    reg_mult = regime_multiplier(regime, direction)
+    return {"final_score": round(score * reg_mult * gate_mult, 1), "regime_multiplier": reg_mult,
+            "gate_multiplier": gate_mult, "blocked": bool(blocked_by) or action not in ("BUY", "SELL"),
+            "blocked_by": blocked_by}
+
+
+def add_confluence(recs: list[dict[str, Any]]) -> None:
+    """Group by symbol: how many independent strategies agree, and flag direction conflicts."""
+    by_sym: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for r in recs:
+        by_sym.setdefault((r["exchange"], r["symbol"]), []).append(r)
+    for rs in by_sym.values():
+        active = [r for r in rs if r["state"] != "WATCH"]
+        dirs = {r["direction_code"] for r in active}
+        for r in rs:
+            agree = [x["strategy"] for x in active if x["direction_code"] == r["direction_code"]]
+            r["confluence"] = {"count": len(agree), "strategies": agree, "all_strategies": [x["strategy"] for x in rs],
+                               "conflict": len(dirs) > 1}
+
+
+def apply_live_benchmark(regime: dict[str, Any] | None, provider: Any, now: datetime) -> dict[str, Any] | None:
+    """Use the live NIFTY 50 price (same store as the header) for the regime close; DMAs stay from daily history."""
+    cur = (regime or {}).get("current")
+    if not cur:
+        return regime
+    q = provider.quote("NIFTY 50", "NSE")
+    if q is None or not q.last_price:
+        cur["facts"]["close_source"] = f"daily close as of {cur.get('as_of')}"
+        return regime
+    f = cur["facts"]
+    f["daily_close"] = f.get("close")
+    f["close"] = round(float(q.last_price), 2)
+    f["close_source"] = f"live {'tick' if q.market_open else 'last price'} as of {q.ts.isoformat(timespec='seconds')}"
+    c, s50, s200, adx = f["close"], f.get("sma50"), f.get("sma200"), f.get("adx14")
+    if s50 is not None and s200 is not None and adx is not None:
+        trend = ("UPTREND" if c > s50 > s200 and adx >= 20 else
+                 "DOWNTREND" if c < s50 < s200 and adx >= 20 else "RANGE / TRANSITION")
+        if trend != cur["trend"]:
+            cur["label"] = cur["label"].replace(cur["trend"].title(), trend.title())
+            cur["trend"] = trend
+    cur["as_of_live"] = q.ts.isoformat(timespec="seconds")
+    return regime
 
 
 def benchmark_trend_up(regime: dict[str, Any] | None) -> bool | None:
@@ -352,6 +469,7 @@ def scan(session: Session, now: datetime | None = None) -> dict[str, Any]:
     if bench is not None and len(bench) > 64:
         bench_ret_63 = float(bench["close"].iloc[-1] / bench["close"].iloc[-64] - 1.0)
     regime = classify_regime(bench, daily) if bench is not None else None
+    regime = apply_live_benchmark(regime, provider, now)
     calendar = set(bench.index.date) if bench is not None and len(bench) else None
     exp = {"1d": provider.expected_last_bar("1d", now), "5m": provider.expected_last_bar("5m", now)}
 
@@ -387,12 +505,12 @@ def scan(session: Session, now: datetime | None = None) -> dict[str, Any]:
             if cand is None:
                 continue
             rec = build_recommendation(strat, key, imap.get(key), cand, p, a, daily_snaps.get(key, {}),
-                                       bench_ret_63, evidence.get(sid), cfg, weights, regime, dq, now, label)
+                                       bench_ret_63, evidence.get(sid), cfg, weights, regime, dq, now, label,
+                                       realtime.freshness(key[0], key[1]))
             rec["provider"] = provider.name
             recs.append(rec)
-    order = {"BUY": 0, "SELL": 0, "WAIT": 1, "NO TRADE": 2}
-    recs.sort(key=lambda r: (order.get(r["action"], 3), {"TRIGGERED": 0, "SETUP": 1, "WATCH": 2}[r["state"]],
-                             -r["score"]))
+    add_confluence(recs)
+    recs.sort(key=lambda r: (r["blocked"], -r["final_score"], -r["score"]))
     return {"generated_at": now.isoformat(), "data_label": label, "provider": provider.name,
             "recommendations": recs, "blocked": list(blocked.values()), "notes": notes, "regime": regime,
             "playbook": build_playbook(regime, evidence, cfg, label),

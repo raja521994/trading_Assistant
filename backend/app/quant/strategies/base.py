@@ -62,6 +62,14 @@ class Strategy:
     def warmup(self) -> int:
         return 60
 
+    # Entry trigger for the SETUP -> TRIGGERED transition: "signal_high" (breakout: long above the signal bar's high,
+    # short below its low) or "signal_close" (mean reversion: a later close back at/above the signal close).
+    trigger_rule: str = "signal_high"
+
+    @property
+    def expiry_bars(self) -> int:
+        return 3
+
     @property
     def one_trade_per_session(self) -> bool:
         return False

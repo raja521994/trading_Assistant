@@ -33,6 +33,7 @@ class CandleStore:
         self._lock = threading.Lock()
         self._version = 0
         self._cache: dict[tuple[int, str], tuple[int, pd.DataFrame]] = {}
+        self.adjustments: dict[int, list[dict]] = {}  # instrument_id -> detected split/bonus back-adjustments
 
     def invalidate(self) -> None:
         with self._lock:
@@ -59,6 +60,12 @@ class CandleStore:
         idx = pd.DatetimeIndex(pd.to_datetime(df["ts"].astype("int64"), unit="s", utc=True)).tz_convert(IST)
         df = df.drop(columns="ts").astype(float)
         df.index = idx.rename("ts")
+        if timeframe == "1d" and len(df):
+            from .corporate_actions import adjust_for_splits
+
+            df, events = adjust_for_splits(df)
+            if events:
+                self.adjustments[instrument_id] = events
         with self._lock:
             if self._version == version:
                 self._cache[key] = (version, df)

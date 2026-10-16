@@ -1,4 +1,5 @@
-"""Signal state machine: WATCH -> SETUP -> TRIGGERED -> EXITED, with INVALIDATED / EXPIRED terminals."""
+"""Persisted signal states: WATCH -> SETUP -> TRIGGERED -> ACTIVE -> EXITED, with INVALIDATED / EXPIRED terminals.
+Transition rules live in signals/setup_fsm.py (shared with the backtester)."""
 
 from __future__ import annotations
 
@@ -14,26 +15,28 @@ if TYPE_CHECKING:
     from ..backtest.engine import Trade
     from ..quant.strategies.base import Strategy
 
-WATCH, SETUP, TRIGGERED, INVALIDATED, EXITED, EXPIRED = (
-    "WATCH", "SETUP", "TRIGGERED", "INVALIDATED", "EXITED", "EXPIRED")
-STATES = [WATCH, SETUP, TRIGGERED, INVALIDATED, EXITED, EXPIRED]
+WATCH, SETUP, TRIGGERED, ACTIVE_STATE, INVALIDATED, EXITED, EXPIRED = (
+    "WATCH", "SETUP", "TRIGGERED", "ACTIVE", "INVALIDATED", "EXITED", "EXPIRED")
+STATES = [WATCH, SETUP, TRIGGERED, ACTIVE_STATE, INVALIDATED, EXITED, EXPIRED]
 TERMINAL = {INVALIDATED, EXITED, EXPIRED}
-ACTIVE = {WATCH, SETUP, TRIGGERED}
+ACTIVE = {WATCH, SETUP, TRIGGERED, ACTIVE_STATE}  # non-terminal states
 ALLOWED: dict[str, set[str]] = {
-    WATCH: {SETUP, TRIGGERED, INVALIDATED, EXPIRED},
-    SETUP: {TRIGGERED, INVALIDATED, EXPIRED},
-    TRIGGERED: {EXITED},
+    WATCH: {SETUP, TRIGGERED, ACTIVE_STATE, INVALIDATED, EXPIRED},
+    SETUP: {TRIGGERED, ACTIVE_STATE, INVALIDATED, EXPIRED},
+    TRIGGERED: {ACTIVE_STATE, INVALIDATED},
+    ACTIVE_STATE: {EXITED},
     INVALIDATED: set(),
     EXITED: set(),
     EXPIRED: set(),
 }
 DESCRIPTIONS = {
     WATCH: "Conditions partially met; monitoring. Not actionable.",
-    SETUP: "All entry conditions met on the latest completed bar; entry reference is the next bar's open.",
-    TRIGGERED: "Entry reference has traded; setup is live until stop, target, strategy exit or time limit.",
-    INVALIDATED: "Stop / invalidation level hit before entry triggered.",
-    EXITED: "Triggered setup closed by stop, target, strategy exit or time limit (outcome recorded).",
-    EXPIRED: "Setup or watch condition lapsed without triggering.",
+    SETUP: "All entry rules met on the signal bar's close. Waiting for a closed bar to cross the entry trigger.",
+    TRIGGERED: "A closed bar crossed the trigger; entry executes at the next bar's open.",
+    ACTIVE_STATE: "Entry filled; live until stop, target, strategy exit or time limit.",
+    INVALIDATED: "Stop hit before the trigger, or the entry open gapped beyond the stop.",
+    EXITED: "Position closed by stop, target, strategy exit or time limit (outcome recorded).",
+    EXPIRED: "Not triggered within the setup window.",
 }
 
 
@@ -101,8 +104,8 @@ def record_replay_signal(session: Session, strategy: "Strategy", t: "Trade", pro
                           "bars_held": t.bars_held})
     session.add(sig)
     session.flush()
-    session.add(SignalEvent(signal_id=sig.id, ts=entry_epoch, from_state=None, to_state=TRIGGERED,
-                            price=t.entry_price, reason="Replay: entry at next open"))
-    session.add(SignalEvent(signal_id=sig.id, ts=exit_epoch, from_state=TRIGGERED, to_state=EXITED,
+    session.add(SignalEvent(signal_id=sig.id, ts=entry_epoch, from_state=None, to_state=ACTIVE_STATE,
+                            price=t.entry_price, reason="Replay: trigger crossed, filled at next open"))
+    session.add(SignalEvent(signal_id=sig.id, ts=exit_epoch, from_state=ACTIVE_STATE, to_state=EXITED,
                             price=t.exit_price, reason=f"Replay: {t.exit_reason}"))
     return 1

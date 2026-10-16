@@ -14,7 +14,7 @@ from app.quant.features import arrays
 from app.quant.scanner import evaluate_latest
 from app.quant.strategies.base import Setup, Strategy, all_strategy_ids, get_strategy
 from app.signals.state_machine import (
-    ALLOWED, EXITED, EXPIRED, INVALIDATED, SETUP, TRIGGERED, WATCH, can_transition)
+    ACTIVE_STATE, ALLOWED, EXITED, EXPIRED, INVALIDATED, SETUP, TRIGGERED, WATCH, can_transition)
 
 SPEC = {"id": "t", "name": "T", "version": "0", "category": "t", "modes": ["swing"], "timeframe": "1d",
         "direction": "long_only", "params": {}}
@@ -39,32 +39,44 @@ def flat(n=30):
 
 
 def test_state_machine_transitions():
-    assert can_transition(WATCH, SETUP) and can_transition(SETUP, TRIGGERED) and can_transition(TRIGGERED, EXITED)
+    assert can_transition(WATCH, SETUP) and can_transition(SETUP, TRIGGERED)
+    assert can_transition(TRIGGERED, ACTIVE_STATE) and can_transition(ACTIVE_STATE, EXITED)
     assert can_transition(SETUP, INVALIDATED) and can_transition(SETUP, EXPIRED)
-    assert not can_transition(TRIGGERED, SETUP)
+    assert can_transition(TRIGGERED, INVALIDATED)  # entry open gapped through the stop
+    assert not can_transition(TRIGGERED, SETUP) and not can_transition(TRIGGERED, EXITED)
     assert not can_transition(EXITED, TRIGGERED)
     for terminal in (INVALIDATED, EXITED, EXPIRED):
         assert ALLOWED[terminal] == set()
 
 
-def test_evaluate_latest_setup_and_triggered():
+def test_evaluate_latest_setup_triggered_active():
     df = flat()
-    a = arrays(df)
-    c = evaluate_latest(At(29), a)
-    assert c["state"] == "SETUP" and c["entry_ref"] == 100.0
-    df.iloc[29, df.columns.get_loc("open")] = 100.3
+    c = evaluate_latest(At(29), arrays(df))
+    assert c["state"] == "SETUP" and c["entry_ref"] == 100.5  # trigger = signal-bar high
+    df.iloc[29, df.columns.get_loc("close")] = 100.6
     c2 = evaluate_latest(At(28), arrays(df))
-    assert c2["state"] == "TRIGGERED" and c2["entry_ref"] == pytest.approx(100.3)
+    assert c2["state"] == "TRIGGERED" and c2["trigger_i"] == 29 and c2["entry_i"] is None
+    df3 = flat()
+    df3.iloc[28, df3.columns.get_loc("close")] = 100.6
+    df3.iloc[29, df3.columns.get_loc("open")] = 100.7
+    c3 = evaluate_latest(At(27), arrays(df3))
+    assert c3["state"] == "ACTIVE" and c3["entry_i"] == 29 and c3["entry_ref"] == pytest.approx(100.7)
 
 
 def test_evaluate_latest_drops_resolved_setups():
     df = flat()
+    df.iloc[28, df.columns.get_loc("close")] = 100.6
     df.iloc[29, df.columns.get_loc("low")] = 97.0  # stop (98) hit after entry
-    assert evaluate_latest(At(28), arrays(df)) is None
+    assert evaluate_latest(At(27), arrays(df)) is None
     df2 = flat()
-    df2.iloc[29, df2.columns.get_loc("open")] = 97.5  # opened below stop -> invalid
-    assert evaluate_latest(At(28), arrays(df2)) is None
-    assert evaluate_latest(At(20), arrays(flat())) is None  # older than lookback window
+    df2.iloc[28, df2.columns.get_loc("close")] = 100.6
+    df2.iloc[29, df2.columns.get_loc("open")] = 97.5  # entry open below stop -> invalidated
+    assert evaluate_latest(At(27), arrays(df2)) is None
+    df3 = flat()
+    df3.iloc[29, df3.columns.get_loc("low")] = 97.5  # stop before trigger -> invalidated
+    assert evaluate_latest(At(28), arrays(df3)) is None
+    assert evaluate_latest(At(25), arrays(flat())) is None  # 3 bars without trigger -> expired
+    assert evaluate_latest(At(10), arrays(flat())) is None  # older than the window
 
 
 @pytest.fixture(scope="module")

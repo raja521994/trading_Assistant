@@ -28,7 +28,9 @@ ENGINE_ASSUMPTIONS = [
     "Signals evaluated on bar close; fills at next bar open with adverse slippage.",
     "Stop fills at stop (or at the open on a gap through it); stop assumed before target within the same bar.",
     "Shared capital pool, fixed-fractional risk sizing on current equity, no leverage, max open positions cap.",
-    "Round-trip transaction costs from the configurable Zerodha-style model (estimates) deducted per trade.",
+    "Round-trip transaction costs from config/charges.yaml (Zerodha-style estimates, see as_of) deducted per trade.",
+    "Slippage per side from a liquidity model: tier by 20-day traded value (3-40 bps) unless a fixed bps is chosen.",
+    "Setups whose stop exceeds the per-mode cap (intraday 1.5%, swing 6%, positional 10% by default) are skipped.",
     "Universe = instruments currently available from the active provider (survivorship bias: delisted symbols "
     "are not included).",
     "Intraday strategies are always flat by the session's last bar.",
@@ -48,6 +50,7 @@ class BacktestRequest(BaseModel):
     slippage_bps: float = Field(5.0, ge=0, le=100)
     walk_forward: bool = False
     folds: int = Field(3, ge=2, le=6)
+    slippage_model: str = Field("liquidity", pattern="^(liquidity|fixed)$")
 
 
 def _select(data: dict[tuple[str, str], pd.DataFrame], symbols: list[str] | None) -> dict[tuple[str, str], pd.DataFrame]:
@@ -66,6 +69,17 @@ def _curve(s: pd.Series, max_points: int = 1500) -> list[dict[str, Any]]:
     return [{"time": str(k), "value": round(float(v), 2)} for k, v in d.items()]
 
 
+def slippage_fn_for(data: dict[tuple[str, str], pd.DataFrame]):  # noqa: ANN201
+    """Per-symbol liquidity-based slippage (bps per side) from the median 20-day traded value in the data."""
+    from ..risk.costs import liquidity_slippage_bps
+
+    turnover = {}
+    for (ex, sym), df in data.items():
+        tv = (df["close"] * df["volume"]).tail(250)
+        turnover[(ex, sym)] = float(tv.median()) / 1e7 if len(tv) and tv.median() > 0 else None
+    return lambda sym, ex: liquidity_slippage_bps(turnover.get((ex, sym)))
+
+
 def data_label() -> str:
     return active_provider().capabilities().data_status.value
 
@@ -82,7 +96,10 @@ def run_backtest(session: Session, req: BacktestRequest, persist: bool = True) -
     tz = next(iter(data.values())).index.tz
     start = pd.Timestamp(req.start).tz_localize(tz) if req.start else None
     end = pd.Timestamp(req.end).tz_localize(tz) + pd.Timedelta(hours=23, minutes=59) if req.end else None
-    cfg = BTConfig(req.capital, req.risk_pct, req.max_alloc_pct, req.max_positions, req.slippage_bps, costs, start, end)
+    risk_cfg = load_risk_config(session)
+    cfg = BTConfig(req.capital, req.risk_pct, req.max_alloc_pct, req.max_positions, req.slippage_bps, costs, start, end,
+                   risk_cfg.max_stop_pct(strat.meta.modes[0]),
+                   slippage_fn_for(data) if req.slippage_model == "liquidity" else None)
     t0 = time.perf_counter()
     res = run_portfolio(strat, data, cfg, {k: prepared(strat, k, df) for k, df in data.items()})
     m = compute_metrics(res["equity"], res["trades"], req.capital, res["exposure"], bench)
@@ -137,7 +154,8 @@ def compute_evidence(session: Session, strategy_ids: list[str] | None = None) ->
         data = load_universe(session, strat.meta.timeframe)
         if not data:
             continue
-        cfg = BTConfig(costs=costs)
+        cfg = BTConfig(costs=costs, max_stop_pct=load_risk_config(session).max_stop_pct(strat.meta.modes[0]),
+                       slippage_fn=slippage_fn_for(data))
         wf = walk_forward(sid, data, cfg, folds=3, benchmark=bench if not strat.intraday else None)
         m = wf.get("oos_metrics") or {}
         last_bar = max(df.index[-1] for df in data.values())
@@ -155,6 +173,7 @@ def compute_evidence(session: Session, strategy_ids: list[str] | None = None) ->
                 for f in wf.get("folds", [])],
             "error": wf.get("error"), "computed_at": int(time.time()), "method": wf.get("method"),
             "regime_split": regime_split,
+            "mfe_r_quantiles": _mfe_quantiles(wf.get("oos_trades", [])),
         }
         result = {"oos_equity": _curve(wf.get("oos_equity", pd.Series(dtype=float))),
                   "oos_trades": [t.to_dict() for t in wf.get("oos_trades", [])][-1000:]}
@@ -165,6 +184,17 @@ def compute_evidence(session: Session, strategy_ids: list[str] | None = None) ->
         log.info("walk-forward evidence %s: %s trades OOS in %.1fs", sid, summary["num_trades"],
                  time.perf_counter() - t0)
     return out
+
+
+def _mfe_quantiles(trades: list) -> dict[str, Any]:
+    """Distribution of maximum favourable excursion (in R) of OOS trades -> realistic target levels."""
+    import numpy as np
+
+    v = [t.mfe_r for t in trades if t.mfe_r is not None]
+    if not v:
+        return {"n": 0}
+    return {"n": len(v), "p50": round(float(np.quantile(v, 0.5)), 2), "p75": round(float(np.quantile(v, 0.75)), 2),
+            "p90": round(float(np.quantile(v, 0.9)), 2)}
 
 
 def _regime_split(trades: list, bench: pd.Series) -> dict[str, Any]:
@@ -207,8 +237,8 @@ def evidence_is_current(session: Session) -> bool:
     if set(ev) != set(all_strategy_ids()):
         return False
     for sid, s in ev.items():
-        if "regime_split" not in s:
-            return False  # computed by an older version without regime statistics
+        if "regime_split" not in s or "mfe_r_quantiles" not in s:
+            return False  # computed by an older version
         data = load_universe(session, get_strategy(sid).meta.timeframe)
         if not data:
             continue

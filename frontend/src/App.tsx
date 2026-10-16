@@ -3,6 +3,8 @@ import { useEffect, useState } from "react";
 import { NavLink, Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type Meta } from "./lib/api";
+import { live, useClock, useLiveTick, useLiveVersion, useStartLive } from "./lib/live";
+import { LivePrice } from "./components/Live";
 import { istTime, pct, tone } from "./lib/format";
 import { DataLabel } from "./components/ui";
 import Overview from "./pages/Overview";
@@ -27,14 +29,6 @@ const NAV = [
 ];
 
 const NOT_CONNECTED = ["F&O terminal", "Fundamentals", "News & events", "Broker holdings", "ML models"];
-
-interface Tick {
-  ts: string;
-  market_session: string;
-  data_label: string;
-  quotes: { symbol: string; last: number; change_pct: number }[];
-  jobs: { startup: string; evidence: string };
-}
 
 // Zerodha redirects back to the registered URL (http://127.0.0.1:5173) with ?request_token=...&status=success.
 // Captured once at load (before routing rewrites the URL) and exchanged server-side for today's access token.
@@ -65,27 +59,43 @@ function useKiteCallback() {
   return state;
 }
 
-function useTicker() {
-  const [tick, setTick] = useState<Tick | null>(null);
-  const [connected, setConnected] = useState(false);
-  useEffect(() => {
-    const es = new EventSource("/api/stream");
-    es.addEventListener("tick", (e) => {
-      setConnected(true);
-      setTick(JSON.parse((e as MessageEvent).data));
-    });
-    es.onerror = () => setConnected(false);
-    return () => es.close();
-  }, []);
-  return { tick, connected };
+function HeaderIndex({ exchange, symbol }: { exchange: string; symbol: string }) {
+  const tk = useLiveTick(exchange, symbol);
+  if (!tk) return null;
+  return (
+    <span className="whitespace-nowrap">
+      <span className="text-slate-400">{symbol}</span>{" "}
+      <LivePrice exchange={exchange} symbol={symbol} className="text-slate-100" />{" "}
+      <span className={clsx("num", tone(tk.chp))}>{pct(tk.chp)}</span>
+    </span>
+  );
+}
+
+function FeedIndicator({ marketOpen }: { marketOpen: boolean }) {
+  useLiveVersion();
+  useClock(1000);
+  const st = live.status;
+  const lastTs = st?.last_tick_ts ?? null;
+  const age = lastTs ? Date.now() / 1000 - lastTs : null;
+  const streaming = st?.state === "connected" || st?.state === "replaying";
+  const stale = marketOpen && streaming && (age === null || age > 5);
+  const color = !live.connected ? "bg-red-500" : stale ? "bg-red-500" : streaming ? "bg-emerald-500" : "bg-amber-500";
+  return (
+    <span className="flex items-center gap-1" title={`${st?.mode ?? "connecting"} · state ${st?.state ?? "?"}`}>
+      <span className={clsx("h-2 w-2 rounded-full", color, streaming && !stale && "animate-pulse")} />
+      {st?.feed ?? "feed"} {streaming && age !== null && <span className={clsx("num", stale ? "text-red-400" : "")}>· last tick {age.toFixed(1)}s</span>}
+      {stale && <span className="rounded border border-red-700 bg-red-900/40 px-1 text-[9px] font-bold text-red-300">STALE</span>}
+    </span>
+  );
 }
 
 export default function App() {
   const meta = useQuery({ queryKey: ["meta"], queryFn: () => api.get<Meta>("/meta"), refetchInterval: 30_000 });
-  const { tick, connected } = useTicker();
+  useStartLive();
+  useClock(1000);
   const kite = useKiteCallback();
-  const label = tick?.data_label ?? meta.data?.data_label ?? "…";
-  const headline = (tick?.quotes ?? []).filter((q) => ["NIFTY 50", "NIFTY BANK", "NIFTY FIN SERVICE", "SENSEX"].includes(q.symbol));
+  const label = meta.data?.data_label ?? "…";
+  const marketOpen = meta.data?.market_session === "OPEN";
 
   return (
     <div className="flex h-full">
@@ -152,18 +162,15 @@ export default function App() {
           </nav>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 text-xs">
             <DataLabel label={label} />
-            <span className="text-slate-400">Market: <span className="text-slate-200">{tick?.market_session ?? meta.data?.market_session ?? "…"}</span></span>
-            {headline.map((q) => (
-              <span key={q.symbol} className="whitespace-nowrap">
-                <span className="text-slate-400">{q.symbol}</span>{" "}
-                <span className="num text-slate-100">{q.last.toLocaleString("en-IN", { maximumFractionDigits: 2 })}</span>{" "}
-                <span className={clsx("num", tone(q.change_pct))}>{pct(q.change_pct)}</span>
-              </span>
-            ))}
+            <span className="text-slate-400">Market: <span className="text-slate-200">{meta.data?.market_session ?? "…"}</span></span>
+            <HeaderIndex exchange="NSE" symbol="NIFTY 50" />
+            <HeaderIndex exchange="NSE" symbol="NIFTY BANK" />
+            <HeaderIndex exchange="NSE" symbol="NIFTY FIN SERVICE" />
+            <HeaderIndex exchange="BSE" symbol="SENSEX" />
             <span className="ml-auto flex items-center gap-3 whitespace-nowrap text-slate-500">
-              <span>Evidence: {tick?.jobs.evidence ?? meta.data?.jobs.evidence ?? "…"}</span>
-              <span className="flex items-center gap-1"><span className={clsx("h-2 w-2 rounded-full", connected ? "bg-emerald-500" : "bg-red-500")} />stream</span>
-              <span className="num">{istTime(tick?.ts ?? meta.data?.server_time_ist)} IST</span>
+              <span>Evidence: {meta.data?.jobs.evidence ?? "…"}</span>
+              <FeedIndicator marketOpen={marketOpen} />
+              <span className="num">{istTime(new Date().toISOString())} IST</span>
             </span>
           </div>
         </header>

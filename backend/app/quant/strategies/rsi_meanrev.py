@@ -11,6 +11,7 @@ from .base import Setup, Strategy, ok
 
 class Rsi2MeanReversion(Strategy):
     id = "rsi2_meanrev"
+    trigger_rule = "signal_close"
 
     @property
     def warmup(self) -> int:

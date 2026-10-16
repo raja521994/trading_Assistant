@@ -35,7 +35,8 @@ class SupertrendTrend(Strategy):
         if not ok(line, et, atr):
             return None
         if d0 == -1 and d1 == 1 and c > et:
-            stop = min(line, c - p["min_stop_atr"] * atr)
+            # Supertrend line or 1 ATR, whichever is wider - but never wider than 2.5 ATR (stop realism).
+            stop = max(min(line, c - p["min_stop_atr"] * atr), c - 2.5 * atr)
             return Setup("LONG", stop, p.get("target_r"), [
                 f"Supertrend({p['atr_n']},{p['mult']}) flipped bullish; line at {line:.2f}",
                 f"Close {c:.2f} above EMA{p['trend_ema']} ({et:.2f})",

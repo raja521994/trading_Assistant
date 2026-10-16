@@ -146,6 +146,10 @@ class KiteProvider(MarketDataProvider):
         self._last_ok: datetime | None = None
         self._latency: float | None = None
         self._final_refresh_done: date | None = None
+        from collections import Counter, deque
+
+        self._call_counts: Counter = Counter()
+        self._call_times: deque = deque(maxlen=5000)
 
     # ---------------- session ----------------
     def token_expired(self) -> bool:
@@ -188,8 +192,11 @@ class KiteProvider(MarketDataProvider):
         if not (self._api_key and self._token):
             raise KiteError(403, "TokenException", "Not logged in to Zerodha")
         delay = 0.5
+        kind = "historical" if "/historical/" in path else "quote" if path.startswith("/quote") else "other"
         for attempt in range(retries):
             (limiter or self._hist_rl).wait()
+            self._call_counts[kind] += 1
+            self._call_times.append((_time.time(), kind))
             t0 = _time.perf_counter()
             try:
                 r = self._client.get(path, params=params, headers=self._headers())
@@ -419,6 +426,19 @@ class KiteProvider(MarketDataProvider):
     def quote(self, symbol: str, exchange: str) -> Quote | None:
         if not self.enabled:
             return None
+        now = self.clock()
+        open_ = self._calendar().in_session(now)
+        # 1) Live tick from the KiteTicker WebSocket (single source of truth for live prices)
+        from ..realtime.store import store as live_store
+
+        t = live_store.get(exchange, symbol)
+        if t is not None and t.source == "kite" and (_time.time() - t.recv_ts < 30 or not open_):
+            prev = t.prev_close if t.prev_close else float(
+                ((self._quotes.get(self._kite_keys.get((exchange, symbol), "")) or {}).get("ohlc") or {}).get("close") or 0)
+            ts = datetime.fromtimestamp(t.exchange_ts or t.recv_ts, tz=now.tzinfo)
+            return Quote(symbol, exchange, float(t.ltp), float(prev or 0.0), ts,
+                         DataStatus.LIVE if open_ else DataStatus.EOD, open_)
+        # 2) REST fallback (ticker not connected yet)
         if _time.monotonic() - self._quotes_at > 3.0:
             try:
                 self._refresh_quotes()
@@ -429,11 +449,17 @@ class KiteProvider(MarketDataProvider):
         q = self._quotes.get(key) if key else None
         if not q or q.get("last_price") is None:
             return None
-        now = self.clock()
-        open_ = self._calendar().in_session(now)
         prev = float((q.get("ohlc") or {}).get("close") or 0.0)
         return Quote(symbol, exchange, float(q["last_price"]), prev, now,
                      DataStatus.LIVE if open_ else DataStatus.EOD, open_)
+
+    def api_usage(self) -> dict[str, Any]:
+        now = _time.time()
+        last_min = [t for t in self._call_times if now - t[0] <= 60]
+        return {"calls_total": dict(self._call_counts),
+                "historical_last_60s": sum(1 for t in last_min if t[1] == "historical"),
+                "quote_last_60s": sum(1 for t in last_min if t[1] == "quote"),
+                "limits": "historical 3 req/s, quote 1 req/s (Kite); this app throttles to 2.5/s and 0.9/s"}
 
     # ---------------- status ----------------
     def capabilities(self) -> ProviderCapabilities:

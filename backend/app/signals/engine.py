@@ -16,6 +16,7 @@ from ..providers.sample import now_ist
 from ..quant.scanner import scan
 from .state_machine import (
     ACTIVE,
+    ACTIVE_STATE,
     EXITED,
     EXPIRED,
     INVALIDATED,
@@ -25,6 +26,8 @@ from .state_machine import (
     create_signal,
     transition,
 )
+
+ORDER = {WATCH: 0, SETUP: 1, TRIGGERED: 2, ACTIVE_STATE: 3}
 
 log = logging.getLogger(__name__)
 _last_scan: dict[str, Any] = {}
@@ -59,17 +62,20 @@ def run_scan_and_persist(session: Session, now: datetime | None = None) -> dict[
         seen.add(key)
         uid = _uid(rec)
         sig = active.get(key)
-        if sig is not None and sig.uid != uid and rec["state"] in (SETUP, TRIGGERED):
+        if sig is not None and sig.uid != uid and rec["state"] in (SETUP, TRIGGERED, ACTIVE_STATE):
             if sig.state == WATCH:
                 transition(session, sig, rec["state"], "Entry conditions completed", rec["reference_price"])
                 sig.uid = uid
             else:
-                transition(session, sig, EXPIRED if sig.state == SETUP else EXITED,
-                           "Superseded by a newer setup", rec["reference_price"])
-                if sig.state == EXITED:
+                if sig.state == ACTIVE_STATE:
+                    transition(session, sig, EXITED, "Superseded by a newer setup", rec["reference_price"])
                     sig.outcome = {"result": "superseded", "exit_price": rec["reference_price"]}
+                elif sig.state == TRIGGERED:
+                    transition(session, sig, INVALIDATED, "Superseded by a newer setup", rec["reference_price"])
+                else:
+                    transition(session, sig, EXPIRED, "Superseded by a newer setup", rec["reference_price"])
                 sig = None
-        if sig is not None and sig.state in (SETUP, TRIGGERED) and rec["state"] == WATCH:
+        if sig is not None and sig.state != WATCH and rec["state"] == WATCH:
             continue  # never downgrade an active setup to watch
         if sig is None:
             if session.scalar(select(Signal.id).where(Signal.uid == uid)) is not None:
@@ -77,8 +83,11 @@ def run_scan_and_persist(session: Session, now: datetime | None = None) -> dict[
             sig = create_signal(session, uid, rec)
             created += 1
         else:
-            if sig.state == SETUP and rec["state"] == TRIGGERED:
-                transition(session, sig, TRIGGERED, "Entry reference traded at next open", rec["entry"]["reference"])
+            if ORDER.get(rec["state"], 0) > ORDER.get(sig.state, 0):
+                if sig.state == SETUP and rec["state"] == ACTIVE_STATE:
+                    transition(session, sig, TRIGGERED, rec["entry"]["note"], rec["entry"].get("trigger"))
+                transition(session, sig, rec["state"], rec["entry"]["note"],
+                           rec["entry"].get("filled") or rec["entry"].get("trigger"))
             sig.payload = {**rec, "state": sig.state}
             sig.action = rec["action"]
             sig.score = rec["score"]
@@ -93,6 +102,9 @@ def run_scan_and_persist(session: Session, now: datetime | None = None) -> dict[
             continue
         if sig.state == WATCH:
             transition(session, sig, EXPIRED, "Watch conditions no longer met")
+        elif sig.state in (SETUP, TRIGGERED):
+            transition(session, sig, EXPIRED if sig.state == SETUP else INVALIDATED,
+                       "Setup no longer valid on the latest closed bars (expired, invalidated or resolved)")
     session.flush()
     update_signal_states(session)
     session.flush()
@@ -105,12 +117,13 @@ def run_scan_and_persist(session: Session, now: datetime | None = None) -> dict[
 
 
 def update_signal_states(session: Session, now: datetime | None = None) -> int:
-    """Advance SETUP/TRIGGERED signals using the latest (possibly SIMULATED) quotes and expiry times."""
+    """Live (tick) transitions between scans: SETUP invalidation (and intraday tick-trigger), ACTIVE stop/target exits.
+    Closed-bar transitions (SETUP -> TRIGGERED -> ACTIVE) come from the scanner, which uses the shared state machine."""
     provider = active_provider()
     now = now or now_ist()
     now_epoch = int(now.timestamp())
     changed = 0
-    sigs = session.scalars(select(Signal).where(Signal.state.in_([SETUP, TRIGGERED]), Signal.origin == "live_scan",
+    sigs = session.scalars(select(Signal).where(Signal.state.in_([SETUP, ACTIVE_STATE]), Signal.origin == "live_scan",
                                                 Signal.provider == provider.name)).all()
     for sig in sigs:
         p = sig.payload
@@ -125,15 +138,14 @@ def update_signal_states(session: Session, now: datetime | None = None) -> int:
         entry = (p.get("entry") or {}).get("reference")
         if sig.state == SETUP:
             if stop is not None and ((long and px <= stop) or (not long and px >= stop)):
-                transition(session, sig, INVALIDATED, f"Price {px:.2f} reached invalidation {stop:.2f} before entry", px)
+                transition(session, sig, INVALIDATED, f"Price {px:.2f} reached the stop {stop:.2f} before the trigger", px)
             elif now_epoch > sig.expires_at:
-                transition(session, sig, EXPIRED, "Setup window lapsed without entry", px)
-            elif q.market_open and entry is not None:
-                transition(session, sig, TRIGGERED, f"Market open; entry reference {entry:.2f} (quote {px:.2f})", px)
+                transition(session, sig, EXPIRED, "Setup window lapsed without a trigger", px)
             else:
                 continue
             changed += 1
             continue
+        entry = (p.get("entry") or {}).get("filled") or entry
         reason = None
         if stop is not None and ((long and px <= stop) or (not long and px >= stop)):
             reason, result = f"Stop {stop:.2f} reached (quote {px:.2f})", "stop"

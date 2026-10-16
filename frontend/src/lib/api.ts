@@ -98,7 +98,7 @@ export interface Recommendation {
   state: SignalState;
   action: Action;
   action_reasons: string[];
-  entry: { reference: number; zone: [number, number] | null; note: string };
+  entry: { reference: number; zone: [number, number] | null; note: string; trigger?: number | null; filled?: number | null };
   stop_loss: number | null;
   invalidation: string;
   targets: number[];

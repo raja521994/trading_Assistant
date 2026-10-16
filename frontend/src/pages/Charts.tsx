@@ -1,8 +1,8 @@
 import clsx from "clsx";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { api } from "../lib/api";
+import { api, type Recommendation } from "../lib/api";
 import { inr, istTime, num } from "../lib/format";
 import { DataLabel, Empty, ErrorBox, Loading, Panel, StateBadge, ActionBadge } from "../components/ui";
 import { CandleChart, LinesChart, type LinePoint, type Marker, type Overlay, type PriceLevel } from "../components/Charts";
@@ -48,6 +48,34 @@ function MtfRow({ exchange, symbol, tf }: { exchange: string; symbol: string; tf
   );
 }
 
+// Overlays relevant to each strategy (so a candidate never opens with an unrelated indicator such as Supertrend).
+function overlayDefaults(strategy: string): Record<string, boolean> {
+  const base = { ema20: false, ema50: false, ema200: false, supertrend: false, bb_upper: false, bb_lower: false, vwap: false, levels: true, signal: true };
+  switch (strategy) {
+    case "ema_cross": return { ...base, ema20: true, ema50: true };
+    case "supertrend_trend": return { ...base, supertrend: true, ema200: true };
+    case "donchian_breakout": return { ...base, ema50: true };
+    case "rsi2_meanrev": return { ...base, ema200: true };
+    case "orb_vwap": return { ...base, vwap: true, levels: false };
+    case "": return { ...base, ema20: true, ema50: true, ema200: true, vwap: true };
+    default: return { ...base, ema20: true, ema50: true };
+  }
+}
+
+function signalLevels(r: Recommendation): PriceLevel[] {
+  const out: PriceLevel[] = [];
+  const ind = r.indicators ?? {};
+  if (r.entry?.trigger) out.push({ price: r.entry.trigger, color: "#38bdf8", title: `Trigger (${r.strategy})` });
+  else if (r.entry?.reference && r.state !== "WATCH") out.push({ price: r.entry.reference, color: "#38bdf8", title: "Entry" });
+  if (r.stop_loss) out.push({ price: r.stop_loss, color: "#ef4444", title: "Stop" });
+  r.targets.forEach((t, i) => out.push({ price: t, color: "#22c55e", title: `Target ${i + 1}`, dashed: true }));
+  if (ind.or_high != null) out.push({ price: ind.or_high, color: "#a78bfa", title: "OR high", dashed: true });
+  if (ind.or_low != null) out.push({ price: ind.or_low, color: "#a78bfa", title: "OR low", dashed: true });
+  if (ind.dc_upper_prev != null) out.push({ price: ind.dc_upper_prev, color: "#f59e0b", title: "Donchian high", dashed: true });
+  if (ind.dc_exit_prev != null) out.push({ price: ind.dc_exit_prev, color: "#f59e0b", title: "Exit channel", dashed: true });
+  return out;
+}
+
 export default function Charts() {
   const params = useParams();
   const [sp, setSp] = useSearchParams();
@@ -56,14 +84,22 @@ export default function Charts() {
   const symbol = params.symbol ?? "NIFTY 50";
   const tf = sp.get("tf") ?? "1d";
   const strategy = sp.get("strategy") ?? "";
-  const [on, setOn] = useState<Record<string, boolean>>({ ema20: true, ema50: true, ema200: true, supertrend: false, bb_upper: false, bb_lower: false, vwap: true, levels: true, signal: true });
+  const signalId = sp.get("signal");
+  const [on, setOn] = useState<Record<string, boolean>>(() => overlayDefaults(strategy));
+  useEffect(() => { setOn(overlayDefaults(strategy)); }, [strategy]);
+  const sigQ = useQuery({
+    queryKey: ["signal", signalId],
+    queryFn: () => api.get<{ recommendation: Recommendation; signal: { state: string } }>(`/signals/${signalId}`),
+    enabled: !!signalId,
+  });
+  const sigRec = sigQ.data?.recommendation;
 
   const inst = useQuery({ queryKey: ["instruments"], queryFn: () => api.get<Instrument[]>("/instruments") });
   const strats = useQuery({ queryKey: ["strategies"], queryFn: () => api.get<Strategy[]>("/strategies") });
   const q = useQuery({
     queryKey: ["chart", exchange, symbol, tf, strategy],
     queryFn: () => api.get<ChartResp>(`/chart/${exchange}/${encodeURIComponent(symbol)}?timeframe=${tf}&bars=${tf === "1d" ? 400 : 750}${strategy ? `&strategy=${strategy}` : ""}`),
-    refetchInterval: tf === "5m" ? 30_000 : 60_000,
+    refetchInterval: 300_000, // indicators/levels refresh; prices and the forming candle stream live
   });
   const d = q.data;
   const intraday = tf !== "1d";
@@ -75,14 +111,21 @@ export default function Charts() {
     const out: PriceLevel[] = [];
     if (d.quote) out.push({ price: d.quote.last_price, color: "#eab308", title: d.quote.market_open ? "LTP" : "Close (official)" });
     if (on.levels) d.levels.forEach((l) => out.push({ price: l.price, color: l.kind === "support" ? "#15803d" : "#b91c1c", title: l.kind === "support" ? "S" : "R", dashed: true }));
-    const sig = d.signals.find((s) => s.timeframe === tf && ["SETUP", "TRIGGERED"].includes(s.state));
-    if (on.signal && sig) {
-      if (sig.stop_loss) out.push({ price: sig.stop_loss, color: "#ef4444", title: `Stop (${sig.strategy})` });
-      if (sig.entry) out.push({ price: sig.entry.reference, color: "#38bdf8", title: "Entry" });
-      (sig.targets ?? []).forEach((t) => out.push({ price: t, color: "#22c55e", title: "Target" }));
+    // Signal-specific overlays: the exact candidate that was clicked (falls back to the latest active signal).
+    if (on.signal) {
+      if (sigRec && sigRec.symbol === symbol && sigRec.timeframe === tf) {
+        signalLevels(sigRec).forEach((l) => out.push(l));
+      } else {
+        const sig = d.signals.find((s) => s.timeframe === tf && ["SETUP", "TRIGGERED", "ACTIVE"].includes(s.state));
+        if (sig) {
+          if (sig.stop_loss) out.push({ price: sig.stop_loss, color: "#ef4444", title: `Stop (${sig.strategy})` });
+          if (sig.entry) out.push({ price: sig.entry.reference, color: "#38bdf8", title: "Entry" });
+          (sig.targets ?? []).forEach((t) => out.push({ price: t, color: "#22c55e", title: "Target" }));
+        }
+      }
     }
     return out;
-  }, [d, on, tf]);
+  }, [d, on, tf, sigRec, symbol]);
   const rsiLines: Overlay[] = useMemo(() => d ? [{ name: "RSI14", color: "#38bdf8", data: d.indicators.rsi14 }] : [], [d]);
   const macdLines: Overlay[] = useMemo(() => d ? [
     { name: "MACD", color: "#38bdf8", data: d.indicators.macd }, { name: "Signal", color: "#f59e0b", data: d.indicators.macd_signal },
@@ -135,7 +178,7 @@ export default function Charts() {
       {d && (
         <div className="grid grid-cols-1 2xl:grid-cols-[minmax(0,1fr)_380px] gap-3">
           <div className="space-y-3 min-w-0">
-            <Panel bodyClass="p-1"><CandleChart candles={d.candles} volume={d.volume} overlays={overlays} levels={levels} markers={d.markers} intraday={intraday} height={460} /></Panel>
+            <Panel bodyClass="p-1"><CandleChart candles={d.candles} volume={d.volume} overlays={overlays} levels={levels} markers={d.markers} intraday={intraday} height={460} liveKey={{ exchange, symbol, tf }} /></Panel>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
               <Panel title="RSI(14)" bodyClass="p-1"><LinesChart lines={rsiLines} height={150} intraday={intraday} /></Panel>
               <Panel title="MACD(12,26,9)" bodyClass="p-1"><LinesChart lines={macdLines} height={150} intraday={intraday} histogram /></Panel>

@@ -35,7 +35,15 @@ class RiskConfig(BaseModel):
     require_oos_edge: bool = True  # strategy must show a walk-forward out-of-sample edge in the current regime
     min_oos_profit_factor: float = Field(1.1, ge=0.5, le=5)
     min_oos_trades: int = Field(30, ge=5, le=1000)
+    # Maximum stop distance (% of entry) per mode; wider stops are skipped (B4: unrealistic stops)
+    max_stop_pct_intraday: float = Field(1.5, gt=0, le=10)
+    max_stop_pct_swing: float = Field(6.0, gt=0, le=25)
+    max_stop_pct_positional: float = Field(10.0, gt=0, le=40)
     costs: CostModel = Field(default_factory=CostModel)
+
+    def max_stop_pct(self, mode: str) -> float:
+        return {"intraday": self.max_stop_pct_intraday, "positional": self.max_stop_pct_positional}.get(
+            mode, self.max_stop_pct_swing)
 
 
 @dataclass

@@ -49,14 +49,16 @@ def test_scanner_recommendations_are_complete(client):
     for rec in recs:
         for f in SPEC7_FIELDS:
             assert f in rec, f
-        assert rec["state"] in ("WATCH", "SETUP", "TRIGGERED")
-        assert rec["action"] in ("BUY", "SELL", "WAIT", "NO TRADE")
+        assert rec["state"] in ("WATCH", "SETUP", "TRIGGERED", "ACTIVE")
+        assert rec["action"] in ("BUY", "SELL", "WAIT", "NO TRADE", "SKIP")
         assert rec["executable"] is False and rec["research_only"] is True
+        assert "final_score" in rec and "blocked" in rec
         if rec["state"] != "WATCH":
             ps = rec["position_size"]
             assert rec["stop_loss"] is not None and ps["qty"] >= 0
             if rec["direction_code"] == "LONG":
                 assert rec["stop_loss"] < rec["entry"]["reference"]
+                assert rec["entry"]["trigger"] is not None and rec["stop_info"]["stop_pct"] > 0
         assert 0 <= rec["score"] <= 100
     detail = client.get(f"/api/signals/{recs[0]['signal_id']}").json()
     assert detail["explanation"]["facts"] and detail["events"]

@@ -104,8 +104,8 @@ def place_paper_order(session: Session, req: PaperOrderRequest) -> PaperTrade:
         sig = session.get(Signal, req.signal_id)
         if sig is None:
             raise PaperOrderRejected(f"Signal {req.signal_id} not found")
-        if sig.state not in ("SETUP", "TRIGGERED"):
-            raise PaperOrderRejected(f"Signal is {sig.state}; only SETUP or TRIGGERED signals can be paper traded")
+        if sig.state not in ("SETUP", "TRIGGERED", "ACTIVE"):
+            raise PaperOrderRejected(f"Signal is {sig.state}; only SETUP, TRIGGERED or ACTIVE signals can be paper traded")
         if sig.action not in ("BUY", "SELL"):
             raise PaperOrderRejected(f"Signal action is {sig.action}; paper orders require a BUY or SELL action")
         p = sig.payload
@@ -125,7 +125,11 @@ def place_paper_order(session: Session, req: PaperOrderRequest) -> PaperTrade:
     q = provider.quote(symbol, exchange)
     if q is None:
         raise PaperOrderRejected("No quote available - cannot simulate a fill (fail-safe)")
-    slip = cfg.slippage_bps / 10_000.0
+    from ..risk.costs import liquidity_slippage_bps
+
+    turnover = _avg_turnover_cr(session, inst)
+    slip_bps = liquidity_slippage_bps(turnover, q.last_price * (req.qty or 100))
+    slip = slip_bps / 10_000.0
     fill = round(q.last_price * (1 + slip) if direction == "LONG" else q.last_price * (1 - slip), 2)
     if stop is None:
         raise PaperOrderRejected("A stop-loss is required for every paper trade")
@@ -149,7 +153,7 @@ def place_paper_order(session: Session, req: PaperOrderRequest) -> PaperTrade:
         sector=inst.sector, strategy=strategy, mode=mode, direction=direction, qty=int(qty), entry_price=fill,
         entry_ts=int(now.timestamp()), stop=float(stop), target=None if target is None else float(target),
         status="OPEN", entry_costs=round(entry_costs, 2), exit_costs=0.0, last_price=q.last_price,
-        details={"quote_at_entry": q.last_price, "quote_status": q.status.value, "slippage_bps": cfg.slippage_bps,
+        details={"quote_at_entry": q.last_price, "quote_status": q.status.value, "slippage_bps": slip_bps,
                  "product": product, "risk_checks": decision.to_dict(), "note": req.note,
                  "exit_time": (sig.payload.get("expires_at") if sig and mode == "intraday" else None)},
     )

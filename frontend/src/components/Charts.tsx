@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { live } from "../lib/live";
 import {
   ColorType,
   CrosshairMode,
@@ -49,11 +50,18 @@ function useChart(height: number, intraday: boolean) {
   return { ref, chartRef };
 }
 
-export function CandleChart({ candles, volume, overlays = [], levels = [], markers = [], height = 420, intraday = false }: {
+export interface LiveChartKey { exchange: string; symbol: string; tf: string }
+
+const IST_SHIFT = 19800; // charts display IST wall-clock times
+
+export function CandleChart({ candles, volume, overlays = [], levels = [], markers = [], height = 420, intraday = false, liveKey }: {
   candles: Candle[]; volume?: LinePoint[]; overlays?: Overlay[]; levels?: PriceLevel[]; markers?: Marker[];
-  height?: number; intraday?: boolean;
+  height?: number; intraday?: boolean; liveKey?: LiveChartKey;
 }) {
   const { ref, chartRef } = useChart(height, intraday);
+  const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const volRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const lastTimeRef = useRef<string | number | null>(null);
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
@@ -62,6 +70,8 @@ export function CandleChart({ candles, volume, overlays = [], levels = [], marke
       upColor: "#22c55e", downColor: "#ef4444", borderVisible: false, wickUpColor: "#22c55e", wickDownColor: "#ef4444",
     });
     cs.setData(candles.map((c) => ({ ...c, time: c.time as Time })));
+    candleRef.current = cs;
+    lastTimeRef.current = candles.length ? candles[candles.length - 1].time : null;
     series.push(cs);
     if (volume?.length) {
       const vs = chart.addHistogramSeries({ priceFormat: { type: "volume" }, priceScaleId: "vol", color: "#334155" });
@@ -70,6 +80,7 @@ export function CandleChart({ candles, volume, overlays = [], levels = [], marke
         time: v.time as Time, value: v.value,
         color: candles[i] && candles[i].close >= candles[i].open ? "rgba(34,197,94,0.35)" : "rgba(239,68,68,0.35)",
       })));
+      volRef.current = vs;
       series.push(vs);
     }
     overlays.forEach((o) => {
@@ -86,11 +97,44 @@ export function CandleChart({ candles, volume, overlays = [], levels = [], marke
     if (markers.length) cs.setMarkers(markers.map((m) => ({ ...m, time: m.time as Time })) as SeriesMarker<Time>[]);
     chart.timeScale().fitContent();
     return () => {
+      candleRef.current = null;
+      volRef.current = null;
       series.forEach((s) => {
         try { chart.removeSeries(s); } catch { /* chart disposed */ }
       });
     };
   }, [chartRef, candles, volume, overlays, levels, markers]);
+
+  // Live updates: series.update() on the forming candle only (never setData per tick).
+  useEffect(() => {
+    if (!liveKey) return;
+    const apply = (time: string | number, o: number, h: number, l: number, c: number, v?: number) => {
+      const cs = candleRef.current;
+      const last = lastTimeRef.current;
+      if (!cs) return;
+      if (last !== null && (typeof time === "number" ? time < (last as number) : String(time) < String(last))) return;
+      try {
+        cs.update({ time: time as Time, open: o, high: h, low: l, close: c });
+        if (v !== undefined && volRef.current) {
+          volRef.current.update({ time: time as Time, value: v, color: c >= o ? "rgba(34,197,94,0.35)" : "rgba(239,68,68,0.35)" });
+        }
+        lastTimeRef.current = time;
+      } catch { /* out-of-order update ignored */ }
+    };
+    if (liveKey.tf === "1d") {
+      const key = `${liveKey.exchange}:${liveKey.symbol}`;
+      return live.subscribeKey(key, () => {
+        const t = live.ticks.get(key);
+        if (!t || t.o == null || t.h == null || t.l == null) return;
+        const day = new Date((t.et ?? t.rt) * 1000 + IST_SHIFT * 1000).toISOString().slice(0, 10);
+        apply(day, t.o, Math.max(t.h, t.lp), Math.min(t.l, t.lp), t.lp);
+      });
+    }
+    return live.watchChart(liveKey.exchange, liveKey.symbol, liveKey.tf, (bar) => {
+      apply(bar.ts + IST_SHIFT, bar.open, bar.high, bar.low, bar.close, bar.partial ? undefined : bar.volume);
+    });
+  }, [liveKey?.exchange, liveKey?.symbol, liveKey?.tf]); // eslint-disable-line react-hooks/exhaustive-deps
+
   return <div ref={ref} className="w-full" />;
 }
 

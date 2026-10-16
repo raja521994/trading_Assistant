@@ -14,6 +14,7 @@ from .config import get_settings
 from .db import run_migrations
 from .jobs import scheduler
 from .logging_setup import setup_logging
+from .realtime.service import service as realtime
 
 log = logging.getLogger(__name__)
 
@@ -28,8 +29,10 @@ async def lifespan(app: FastAPI):  # noqa: ANN201
     tasks: list[asyncio.Task] = []
     if s.background_jobs:
         scheduler.start_background(tasks)
+        await realtime.start()
     log.info("startup complete (provider=%s)", s.data_provider)
     yield
+    await realtime.stop()
     for t in tasks:
         t.cancel()
 

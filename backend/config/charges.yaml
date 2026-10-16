@@ -1,0 +1,42 @@
+# Transaction charges used by ALL backtests, paper trades and cost estimates.
+# Zerodha-style rates as understood on the as_of date - VERIFY at https://zerodha.com/charges before relying on them.
+# Percent values are % of turnover (value) unless noted. Edit this file and restart (or change in Risk settings).
+as_of: "2024-10-01"
+source: "https://zerodha.com/charges (manually transcribed; verify)"
+
+equity:
+  brokerage_delivery_pct: 0.0          # CNC
+  brokerage_intraday_pct: 0.03         # MIS, capped per order
+  brokerage_cap_per_order: 20.0
+  stt_delivery_pct: 0.1                # buy and sell
+  stt_intraday_sell_pct: 0.025         # sell side only
+  exchange_txn_pct_nse: 0.00297
+  exchange_txn_pct_bse: 0.00375
+  sebi_fee_per_crore: 10.0
+  stamp_delivery_buy_pct: 0.015
+  stamp_intraday_buy_pct: 0.003
+  gst_pct: 18.0                        # on brokerage + exchange txn + SEBI fee
+  dp_charge_per_sell: 15.93            # delivery sell, per scrip per day (incl. GST)
+
+futures:
+  brokerage_pct: 0.03
+  brokerage_cap_per_order: 20.0
+  stt_sell_pct: 0.02
+  exchange_txn_pct_nse: 0.00173
+  sebi_fee_per_crore: 10.0
+  stamp_buy_pct: 0.002
+  gst_pct: 18.0
+
+options:                               # percentages are of PREMIUM turnover
+  brokerage_per_order: 20.0
+  stt_sell_pct: 0.1
+  exchange_txn_pct_nse: 0.03503
+  sebi_fee_per_crore: 10.0
+  stamp_buy_pct: 0.003
+  gst_pct: 18.0
+
+# Liquidity-based slippage (bps per side) by 20-day average traded value, plus a size impact term:
+#   slippage_bps = tier_bps + impact_k * sqrt(order_value / avg_daily_value) * 100
+slippage:
+  tiers_cr_bps: [[500, 3], [100, 5], [20, 10], [5, 20], [0, 40]]
+  impact_k: 2.0

@@ -90,9 +90,12 @@ async def _loop(fn, every: float, name: str) -> None:  # noqa: ANN001
 def initial_load() -> None:
     """Startup ingest + scan, then walk-forward evidence/replay. Runs in a background thread so the API
     is responsive immediately (live providers may need ~1 minute to download history)."""
+    from ..realtime.service import service as realtime
+
     try:
         status["startup"] = "running"
         startup_sync()
+        realtime.restart_threadsafe()  # (re)subscribe the live feed to the freshly synced instruments
     except Exception as exc:  # noqa: BLE001
         log.exception("startup load failed")
         status["startup"] = "error"

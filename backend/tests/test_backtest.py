@@ -19,7 +19,10 @@ SPEC = {"id": "test", "name": "Test", "version": "0", "category": "test", "modes
 
 
 class OneShot(Strategy):
-    """Signals LONG on the close of bar `at` with a fixed stop distance and 2R target."""
+    """Signals LONG on the close of bar `at` (trigger = signal close, so the next bar's close confirms it and the
+    entry fills at the open of the bar after that), with a fixed stop distance and 2R target."""
+
+    trigger_rule = "signal_close"
 
     def __init__(self, at: int, stop_dist: float = 2.0, target_r: float | None = 2.0, exit_at: int | None = None):
         super().__init__(SPEC)
@@ -55,15 +58,18 @@ def run(strat, df, **cfg):
     return run_portfolio(strat, {("NSE", "TEST"): df}, c)
 
 
-def test_entry_fills_at_next_open_and_target_exit():
-    df = bars(overrides={6: {"open": 100.2}, 8: {"high": 104.5}})
+# Signal on bar 5 -> bar 6 closes at/above the trigger (TRIGGERED) -> fill at bar 7's open (ACTIVE).
+
+def test_entry_needs_trigger_then_fills_at_next_open_and_target_exit():
+    df = bars(overrides={7: {"open": 100.2}, 9: {"high": 104.5}})
     res = run(OneShot(at=5), df)
     t = res["trades"][0]
-    assert t.entry_ts == df.index[6].isoformat()
+    assert t.signal_ts == df.index[5].isoformat()
+    assert t.entry_ts == df.index[7].isoformat()
     assert t.entry_price == pytest.approx(100.2)
-    # risk/share = 100.2 - 98 = 2.2 -> target 104.6 not reached at 104.5; ensure no exit at bar 8
+    # risk/share = 100.2 - 98 = 2.2 -> target 104.6 not reached at 104.5
     assert t.exit_reason == "End of test period"
-    df2 = bars(overrides={8: {"high": 104.5}})
+    df2 = bars(overrides={9: {"high": 104.5}})
     t2 = run(OneShot(at=5), df2)["trades"][0]
     assert t2.exit_reason == "Target" and t2.exit_price == pytest.approx(104.0)
     # qty capped by 15% allocation: 150,000 / 100 = 1,500
@@ -71,28 +77,44 @@ def test_entry_fills_at_next_open_and_target_exit():
     assert t2.r_multiple == pytest.approx(2.0)
 
 
-def test_gap_through_stop_exits_at_open():
+def test_no_trigger_means_no_trade_and_setup_expires():
+    # bars 6-8 close below the trigger (100) -> expires after 3 bars; a later cross must not fill
+    df = bars(overrides={6: {"close": 99.8}, 7: {"close": 99.8}, 8: {"close": 99.8}, 9: {"close": 101.0}})
+    assert run(OneShot(at=5), df)["trades"] == []
+
+
+def test_stop_before_trigger_invalidates():
+    df = bars(overrides={6: {"low": 97.5, "close": 99.0}, 7: {"close": 101.0}})
+    assert run(OneShot(at=5), df)["trades"] == []
+
+
+def test_gap_through_stop_on_entry_open_invalidates():
     df = bars(overrides={7: {"open": 97.0, "low": 96.5, "high": 97.5, "close": 97.0}})
+    assert run(OneShot(at=5), df)["trades"] == []
+
+
+def test_gap_through_stop_exits_at_open():
+    df = bars(overrides={8: {"open": 97.0, "low": 96.5, "high": 97.5, "close": 97.0}})
     t = run(OneShot(at=5), df)["trades"][0]
     assert t.exit_reason == "Stop (gap through)" and t.exit_price == pytest.approx(97.0)
     assert t.r_multiple == pytest.approx(-1.5)
 
 
 def test_stop_assumed_before_target_in_same_bar():
-    df = bars(overrides={7: {"high": 105.0, "low": 97.0}})
+    df = bars(overrides={8: {"high": 105.0, "low": 97.0}})
     t = run(OneShot(at=5), df)["trades"][0]
     assert t.exit_reason == "Stop loss" and t.exit_price == pytest.approx(98.0)
 
 
 def test_strategy_exit_fills_next_open():
-    df = bars(overrides={10: {"open": 101.0}})
-    t = run(OneShot(at=5, target_r=None, exit_at=9), df)["trades"][0]
+    df = bars(overrides={11: {"open": 101.0}})
+    t = run(OneShot(at=5, target_r=None, exit_at=10), df)["trades"][0]
     assert t.exit_reason == "strategy exit"
-    assert t.exit_ts == df.index[10].isoformat() and t.exit_price == pytest.approx(101.0)
+    assert t.exit_ts == df.index[11].isoformat() and t.exit_price == pytest.approx(101.0)
 
 
 def test_costs_and_slippage_reduce_pnl():
-    df = bars(overrides={8: {"high": 104.5}})
+    df = bars(overrides={9: {"high": 104.5}})
     gross = run(OneShot(at=5), df)["trades"][0]
     c = BTConfig(slippage_bps=10, costs=CostModel())
     net = run_portfolio(OneShot(at=5), {("NSE", "TEST"): df}, c)["trades"][0]
@@ -100,18 +122,25 @@ def test_costs_and_slippage_reduce_pnl():
     assert net.costs > 0 and net.net_pnl < gross.net_pnl
 
 
-def test_no_entry_on_last_bar_and_window_respected():
+def test_stop_cap_skips_wide_stops():
+    df = bars(overrides={9: {"high": 104.5}})
+    res = run(OneShot(at=5, stop_dist=10.0), df, max_stop_pct=5.0)
+    assert res["trades"] == []
+
+
+def test_no_entry_on_last_bars_and_window_respected():
     df = bars()
     assert run(OneShot(at=19), df)["trades"] == []
+    assert run(OneShot(at=18), df)["trades"] == []  # triggered on the last bar, no next open to fill
     res = run(OneShot(at=5), df, start=df.index[8])
     assert res["trades"] == []
 
 
 def test_equity_marks_to_market():
-    df = bars(overrides={7: {"close": 101.0}})
+    df = bars(overrides={8: {"close": 101.0}})
     res = run(OneShot(at=5), df)
     assert res["equity"].iloc[0] == pytest.approx(1_000_000.0)
-    assert res["equity"].loc[df.index[7]] == pytest.approx(1_000_000.0 + 1500 * 1.0)
+    assert res["equity"].loc[df.index[8]] == pytest.approx(1_000_000.0 + 1500 * 1.0)
 
 
 def test_metrics_drawdown_and_return():
