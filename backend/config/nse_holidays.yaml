@@ -1,0 +1,9 @@
+# NSE trading holidays (exchange closed for equities). Kite Connect has no holiday API, so the app also infers a
+# holiday when NIFTY 50 has not traded by 09:45 IST on a weekday. Add the official dates from
+# https://www.nseindia.com/resources/exchange-communication-holidays each year so the calendar is correct in advance
+# (no intraday signals, correct "expected last bar" and staleness checks on those days).
+#
+# Format:
+# holidays:
+#   - {date: "YYYY-MM-DD", name: "Holiday name"}
+holidays: []

@@ -14,8 +14,15 @@ out-of-sample evaluation, and lets you **paper trade** signals and track outcome
 NSE/BSE + authorised providers ──► Market data & storage ──► Quant engine + AI research ──► Risk & signal validation ──► Dashboard
  (KiteProvider [LIVE, default]     (ingest, validation,        (indicators, YAML strategy     (sizing, limits, costs,       (React/TS/Vite,
   | (Upstox / Yahoo, optional)      SQLite/Postgres,            specs, scanner, scoring,       state machine, WAIT /         Lightweight Charts,
-  | SampleProvider [SIMULATED])     coverage matrix)            regime, template explainer)    NO TRADE, paper broker)       SSE ticker)
+  | SampleProvider [SIMULATED])     coverage matrix)            regime, template explainer)    NO TRADE, paper broker)       live WebSocket)
 ```
+
+**At a glance (latest build):** live Kite WebSocket ticks (tick-to-screen p95 < 1 s) · NIFTY 200 universe with daily
+history from 2018 · a 52-strategy library (34 testable, 15 NOT TESTABLE with the missing data, 3 context inputs) ·
+an honest validation engine and **strategy tournament** · a **decision engine** that shows the best stocks to buy
+from validated strategies only, or exactly `NO TRADE: no setup has a validated edge in the current regime`.
+On the current real data **0 of 34 strategies pass** every criterion, so the app currently says NO TRADE - see
+[docs/STRATEGY_TOURNAMENT.md](docs/STRATEGY_TOURNAMENT.md).
 
 ## Link Zerodha (live data, default)
 
@@ -25,8 +32,11 @@ NSE/BSE + authorised providers ──► Market data & storage ──► Quant e
    and **API secret**, click **Save keys** (stored only in `backend/.env`, never sent back to the browser).
 3. Click **Login with Zerodha**, sign in on kite.zerodha.com; Zerodha redirects back to `http://127.0.0.1:5173`, and the
    backend exchanges the one-time `request_token` (SHA-256 checksum with your secret) for today's access token.
-4. The backend loads ~3 years of daily bars and 30 days of 5-minute bars (≈1–2 min at Zerodha's 3 req/s historical
-   limit), then polls quotes every few seconds and new 5-minute bars every minute.
+4. The backend loads the current **NIFTY 200** constituents + 18 indices (incl. INDIA VIX), daily bars from 2018 and
+   30 days of 5-minute bars (≈2 min at Zerodha's 3 req/s historical limit), then a one-off research backfill (one
+   year of 5-minute bars for NIFTY 50 names, ≈5 min, status `backfill` in `/api/meta`). Live prices stream over one
+   **KiteTicker WebSocket** held by the backend (FULL mode: LTP, OHLC, volume, depth, exchange timestamp); new 5-minute
+   bars are fetched every minute.
 
 Zerodha resets access tokens daily (~06:00 IST): **log in again each trading day** (the app detects the expired session
 and falls back to clearly-labelled SIMULATED data until you do). The app never calls order APIs and never asks for
@@ -54,6 +64,37 @@ BUY/SELL is shown only when the data supports it; otherwise the setup is **WAIT*
 Both are configurable in Risk & Performance. The Scanner's **Market playbook** shows each strategy's OOS results split by
 regime and which gates pass. `backend/research/kite_analysis.py` reproduces the analysis
 (`cd backend; uv run python -m research.kite_analysis`).
+
+## Real-time streaming
+
+- One KiteTicker connection in the backend (`app/realtime/`): native binary-protocol parser, exponential back-off
+  reconnect with automatic re-subscribe, stops on authentication errors (log in again), in-process tick store,
+  server-side 1m/5m candle builder on exchange timestamps. The browser holds one WebSocket to `/api/ws` and receives
+  only changed symbols every 250 ms; charts update the forming candle with `series.update()`.
+- STALE badge when a symbol has no tick for > 5 s in market hours; stale symbols are never actionable.
+- **Data & Integrations → Real-time feed health**: ticks/s, exchange→server and tick→screen p50/p95, last reconnect,
+  subscriptions, historical-API usage. Measured on the live feed: exchange→server p95 ≈ 0.5 s, tick→screen p95
+  ≈ 0.7-0.8 s (Kite exchange timestamps have 1-second resolution).
+- **Replay outside market hours**: `REALTIME_MODE=replay` replays the last stored session's 5-minute bars as ticks
+  (`REPLAY_DATE`, `REPLAY_SPEED`). To replay real ticks, record a session with `RECORD_TICKS=backend/var/ticks.jsonl`
+  during market hours, then start with `REALTIME_MODE=replay REPLAY_FILE=backend/var/ticks.jsonl`.
+
+## Strategy tournament and decision engine
+
+- **Strategy Lab → Run tournament** validates every testable strategy in background worker processes (~10 min):
+  anchored walk-forward with embargo, bootstrap CIs, deflated Sharpe, ±20% parameter stability, 2× costs,
+  sub-periods, regime split, NIFTY 50 total-return benchmark, survivorship sensitivity and a random-walk control in
+  which nothing may pass. Only strategies that pass **all** criteria are ranked; the Top 10 is never padded.
+  Exports: CSV and a self-contained HTML report (print to PDF). Pass criteria and score weights are editable.
+  CLI: `cd backend; uv run python -m app.validation.run_cli --force`. Method and latest results:
+  [docs/STRATEGY_TOURNAMENT.md](docs/STRATEGY_TOURNAMENT.md).
+- **AI Scanner → Best stocks to buy** (decision engine): freshness gate → regime (bull/bear/sideways × India VIX) and
+  exposure budget → only tournament-passed, regime-suitable, non-decayed strategies → symbol score (editable weights:
+  validated edge 30, confluence 20, relative strength 15, risk/reward 15, participation 10, fundamentals/events 10
+  [not connected, neutral]) × regime × gates → portfolio constraints (risk per trade, sector cap, correlation,
+  liquidity, daily-loss halt) → **TOP N ≤ 5** with entry trigger, stop, MFE-based targets, qty, max loss, evidence and
+  95% confidence ranges, or exactly `NO TRADE: no setup has a validated edge in the current regime` plus Watch Only
+  candidates with what must change. The event gate (results dates, F&O ban, circuits) is reported as UNKNOWN.
 
 ## Optional other data sources (hidden in the UI)
 
@@ -120,7 +161,9 @@ To reset all local state, stop the backend and delete `backend/var/`.
 ### Tests, typecheck, build
 
 ```powershell
-cd backend;  uv run pytest            # 92 tests: indicators, signal logic, sizing, risk limits, costs, backtest, API
+cd backend;  uv run pytest            # 125 tests: indicators, setup state machine, look-ahead (all strategies), costs,
+                                      # candles, Kite protocol, replayed tick file, gates, sizing, tournament pass logic,
+                                      # random-walk control, decision engine, API, WebSocket
 cd frontend; npm run typecheck        # tsc --noEmit
 cd frontend; npm run build            # production bundle in frontend/dist
 ```
@@ -144,7 +187,12 @@ cd frontend; npm run build            # production bundle in frontend/dist
 | `GET /api/integrations/kite`, `POST .../kite/keys`, `POST/DELETE .../kite/session` | Zerodha status, save API key+secret (server-side), exchange the login `request_token`, logout |
 | `POST /api/integrations/provider` | Choose the active data source (yahoo / upstox / kite / sample) |
 | `POST/DELETE /api/integrations/upstox/token` | Validate + store (server-side) / remove the Upstox Analytics Token and switch provider |
-| `GET /api/stream` | Server-sent events: index quotes, session, job status |
+| `GET /api/stream` | Server-sent events: index quotes, session, job status (legacy) |
+| `WS /api/ws` | Live ticks (changed symbols every 250 ms), forming candles for the open chart, feed status |
+| `GET /api/realtime/health` | Feed state, ticks/s, latency p50/p95, reconnects, subscriptions, REST usage |
+| `GET /api/library` | All 52 strategies: kind, data requirements, missing data, parameter grid |
+| `POST /api/tournament/run`, `GET /api/tournament/status`, `GET /api/tournament/report[.csv\|.html]`, `GET/PUT /api/tournament/config` | Strategy tournament |
+| `GET /api/decision`, `PUT /api/decision/weights`, `GET /api/regime` | Decision engine (Top N or NO TRADE) and regime inputs |
 
 ## What is implemented
 
@@ -183,15 +231,27 @@ is rejected (falls back to the deterministic interpretation). The AI cannot plac
 | **Yahoo Finance** (`backend/app/providers/yahoo.py`) — optional, hidden | Real data via `yfinance` (no login): batched daily + 5-minute candles, quotes, holiday inference (no bars on a weekday), derived daily bars for indices Yahoo lacks. Labelled DELAYED. Verified end-to-end against real Yahoo data (ingest → scan → walk-forward). | Unofficial/undocumented endpoints, personal non-commercial use only; may be delayed or rate-limited; raw (unadjusted) prices; static universe. |
 | **Upstox** (`backend/app/providers/upstox.py`) — optional, hidden | Real-time, read-only via the free Analytics Token: instrument master (public BOD JSON), daily candles (V3, from 2023), 5-minute candles (last 30 days + today's completed bars), batched LTP quotes (V3, ≤500 keys/call), market holidays. Rate-limited to 8 req/s (Upstox limit 50/s, 500/min). Universe: NIFTY 50-style list (configurable `UPSTOX_UNIVERSE`) + 10 indices. Unit-tested with a mocked HTTP transport; token rejection verified against the real API. | Universe is static (not auto-synced with index rebalances); candles not adjusted here for corporate actions; WebSocket streaming, option chain, fundamentals and news APIs exist at Upstox but are not wired yet; redistribution terms if shared beyond personal use. |
 | **SampleProvider** | Used only when no live credentials are configured (or `DATA_PROVIDER=sample`). 42 equities + 10 indices, deterministic. **SIMULATED.** | n/a — synthetic, weekday calendar. |
-| **Zerodha Kite Connect** (`backend/app/providers/kite.py`) — **default** | Official Kite Connect v3 REST API, read-only: instrument dumps (NSE/BSE, cached daily), daily + 5-minute historical candles (chunked, 2.5 req/s), batched quotes (≤450/call, 1 req/s), in-app login via the official redirect flow with checksum token exchange, daily-expiry detection, holiday inference, clear errors for expired sessions and plans without market data. Unit-tested with a mocked HTTP transport; the real token endpoint was verified to respond. | Your plan includes quotes + historical data; full live ingest needs your login; static universe; KiteTicker WebSocket not wired (REST polling). |
+| **Zerodha Kite Connect** (`backend/app/providers/kite.py`) — **default** | Official Kite Connect v3 REST API, read-only: instrument dumps (NSE/BSE, cached daily), daily + 5-minute historical candles (chunked, 2.5 req/s), batched quotes (≤450/call, 1 req/s), in-app login via the official redirect flow with checksum token exchange, daily-expiry detection, holiday inference, clear errors for expired sessions and plans without market data. Unit-tested with a mocked HTTP transport; the real token endpoint was verified to respond. | Your plan includes quotes + historical data; full live ingest needs your login. Live prices via the KiteTicker WebSocket (FULL mode, one backend connection); universe = current NIFTY 200 (not point-in-time). |
 | Fundamentals, corporate actions, news, F&O (OI/IV/Greeks/option chain), broker holdings | **Not connected** — shown as such in the UI; no placeholder buttons. | Choose licensed providers; evaluate data rights per provider. |
 
 ## Configuration
 
 See `.env.example`. Key settings: `DATABASE_URL` (default SQLite under `backend/var/`; Postgres via
 `docker-compose.yml` + `psycopg`), `DATA_PROVIDER` (`kite` default / `sample` / `upstox` / `yahoo`), `UNIVERSE`, `KITE_*`, `YAHOO_*`, `UPSTOX_*`, `SAMPLE_*`, `KITE_*`, `LLM_*`,
-`BACKGROUND_JOBS`, `QUOTE_REFRESH_SECONDS`. Risk limits, cost-model rates and score weights are edited in the UI
+`BACKGROUND_JOBS`, `QUOTE_REFRESH_SECONDS`, `UNIVERSE_INDEX` (nifty50/100/200/500, default nifty200),
+`KITE_HISTORY_START` (2018-01-01), `RESEARCH_INTRADAY_DAYS` (365), `REALTIME_MODE` (auto/replay/off), `REPLAY_*`,
+`RECORD_TICKS`, `TOURNAMENT_WORKERS`. Risk limits, cost-model rates and score weights are edited in the UI
 (Risk & Performance page) and stored in the database with audit-log entries.
+
+Configuration files (all thresholds live here; edit and restart or edit in the UI):
+
+| File | Contents |
+|---|---|
+| `backend/config/charges.yaml` | Brokerage/STT/exchange/SEBI/GST/stamp rates for CNC, MIS, futures, options with an `as_of` date; liquidity slippage tiers |
+| `backend/config/tournament.yaml` | Walk-forward, bootstrap, pass criteria, sub-periods, composite score weights, random-walk control |
+| `backend/config/decision.yaml` | Top N, exposure budget by regime, symbol score weights, correlation/liquidity caps, decay monitor |
+| `backend/config/nse_holidays.yaml` | NSE holidays (add the official list each year; unlisted holidays are inferred from the feed) |
+| `backend/config/universe/*.csv` | Cached index constituents (refreshed weekly from niftyindices.com) |
 
 ## Security & execution controls
 
@@ -207,9 +267,14 @@ See `.env.example`. Key settings: `DATABASE_URL` (default SQLite under `backend/
 
 - Sample data (used only when live data is not connected) is synthetic; results on it say **nothing** about real markets.
 - Even on real data, a backtest/walk-forward result is not a promise of future performance.
-- Universe = instruments the provider currently lists (survivorship bias); no corporate-action adjustment.
+- Universe = current NIFTY 200 constituents, not point-in-time (survivorship bias). Cross-sectional momentum on today's
+  constituents is therefore marked as not validatable; event strategies are re-tested on names already established
+  in 2018. Unadjusted split/bonus jumps are detected and back-adjusted.
+- Not connected (strategies depending on them are NOT TESTABLE): fundamentals, results dates, news, delivery %,
+  bulk/block deals, F&O OI/option-chain history, FII/DII flows, macro series, F&O ban / circuit lists.
 - Cost-model rates are estimates (verify at zerodha.com/charges); income tax on gains is excluded.
-- Exchange holidays: from Upstox (current year) when connected; with Yahoo a weekday with no NIFTY 50 bar after 09:45 is treated as a holiday. Historical gap checks use the NIFTY 50 bar dates as the session calendar.
+- Exchange holidays: `config/nse_holidays.yaml` plus inference (a weekday with no NIFTY 50 trade by 09:45 IST is a
+  holiday). Historical gap checks use the NIFTY 50 bar dates as the session calendar.
 - The composite score is a ranking, not a calibrated probability.
 - The intraday (ORB) scanner only produces setups during the trading session (until 15:15 IST).
 
@@ -219,7 +284,10 @@ See `.env.example`. Key settings: `DATABASE_URL` (default SQLite under `backend/
 backend/   FastAPI app (app/), Alembic migrations, tests/
   app/providers   MarketDataProvider interface, SampleProvider, KiteProvider, registry
   app/data        sample generator, ingestion, validation, coverage, repository/cache
-  app/quant       indicators, features, strategies + YAML specs, scanner, scoring, regime, overview
+  app/quant       indicators, features, strategies + YAML specs, library/ (52-strategy catalog), scanner, scoring, regime
+  app/realtime    KiteTicker protocol + feed, tick store, candle builder, replay/recording, WebSocket fan-out
+  app/validation  per-strategy validation, statistics, tournament, HTML report, CLI
+  app/decision    decision engine (best stocks to buy / NO TRADE)
   app/risk        cost model, position sizing, risk limits
   app/signals     state machine, signal engine
   app/backtest    engine, metrics, walk-forward, service (evidence, replay)

@@ -13,9 +13,29 @@ BAR_MINUTES = 5
 BARS_PER_SESSION = 75
 
 
+HOLIDAY_FILE = __import__("pathlib").Path(__file__).resolve().parents[2] / "config" / "nse_holidays.yaml"
+_holiday_cache: dict[str, object] = {"mtime": None, "data": {}}
+
+
+def configured_holidays() -> dict[date, str]:
+    """User-maintained NSE holidays from config/nse_holidays.yaml (re-read when the file changes)."""
+    try:
+        m = HOLIDAY_FILE.stat().st_mtime
+    except FileNotFoundError:
+        return {}
+    if _holiday_cache["mtime"] != m:
+        import yaml
+
+        raw = yaml.safe_load(HOLIDAY_FILE.read_text(encoding="utf-8")) or {}
+        _holiday_cache["data"] = {date.fromisoformat(str(h["date"])): str(h.get("name", "holiday"))
+                                  for h in raw.get("holidays") or []}
+        _holiday_cache["mtime"] = m
+    return dict(_holiday_cache["data"])  # type: ignore[arg-type]
+
+
 class TradingCalendar:
-    def __init__(self, holidays: dict[date, str] | None = None) -> None:
-        self.holidays = holidays or {}
+    def __init__(self, holidays: dict[date, str] | None = None, use_config: bool = True) -> None:
+        self.holidays = {**(configured_holidays() if use_config else {}), **(holidays or {})}
 
     def is_trading_day(self, d: date) -> bool:
         return d.weekday() < 5 and d not in self.holidays

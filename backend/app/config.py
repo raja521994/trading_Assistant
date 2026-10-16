@@ -70,6 +70,8 @@ class Settings(BaseSettings):
     realtime_mode: str = "auto"
     replay_date: str | None = None  # YYYY-MM-DD; default = last stored session
     replay_speed: float = 60.0
+    replay_file: str | None = None  # REALTIME_MODE=replay + REPLAY_FILE=<jsonl> replays a recorded tick file
+    record_ticks: str | None = None  # path: append every raw Kite WebSocket frame (JSONL, base64) for later replay
 
     @field_validator("database_url")
     @classmethod

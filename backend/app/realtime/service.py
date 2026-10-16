@@ -90,7 +90,12 @@ class RealtimeService:
             if mode == "off":
                 self.mode_note = "Realtime feed disabled (REALTIME_MODE=off)"
                 return
-            if mode == "replay":
+            if mode == "replay" and s.replay_file:
+                from .feeds import TickFileFeed
+
+                self.feed = TickFileFeed(store, s.replay_file, speed=s.replay_speed, loop=True)
+                self.mode_note = f"REPLAY of recorded Kite ticks from {s.replay_file} at {s.replay_speed}x (not live)"
+            elif mode == "replay":
                 bars = {}
                 for i in insts:
                     df = candle_store.load(db, i.id, "5m")
@@ -107,7 +112,7 @@ class RealtimeService:
                 if len(keys) <= 400:
                     # Small universe: FULL for everything (exchange timestamps for candles, depth for liquidity).
                     full, quote = full + quote, []
-                self.feed = KiteTickerFeed(api_key, token, store, full, quote)
+                self.feed = KiteTickerFeed(api_key, token, store, full, quote, record_path=s.record_ticks or None)
                 self.mode_note = "Kite WebSocket (KiteTicker), live"
             elif provider.name == "sample":
                 self.feed = SimulatedFeed(store, provider.quote, [k for (k, _, _) in keys])

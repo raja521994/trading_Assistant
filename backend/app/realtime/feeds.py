@@ -46,8 +46,10 @@ class KiteTickerFeed:
     re-subscribe; stops (on_noreconnect) on authentication failure or after `max_retries`."""
 
     def __init__(self, api_key: str, access_token: str, store: LiveStore, full_tokens: list[int],
-                 quote_tokens: list[int], max_retries: int = 50, url: str = KITE_WS, connect=None) -> None:
+                 quote_tokens: list[int], max_retries: int = 50, url: str = KITE_WS, connect=None,
+                 record_path: str | None = None) -> None:
         self._api_key, self._access_token = api_key, access_token
+        self.record = open(record_path, "a", encoding="utf-8", buffering=1) if record_path else None  # noqa: SIM115
         self.store = store
         self.full_tokens = list(dict.fromkeys(full_tokens))[:MAX_TOKENS_PER_CONNECTION]
         room = MAX_TOKENS_PER_CONNECTION - len(self.full_tokens)
@@ -101,6 +103,11 @@ class KiteTickerFeed:
                             raise ConnectionError("no data or heartbeat for 15 s") from None
                         if isinstance(msg, (bytes, bytearray)):
                             now = time.time()
+                            if self.record is not None and len(msg) > 1:
+                                import base64
+
+                                self.record.write(json.dumps({"t": round(now, 3),
+                                                              "b": base64.b64encode(bytes(msg)).decode()}) + "\n")
                             for t in parse_message(bytes(msg)):
                                 self.store.apply(t, "kite", now)
                         else:
@@ -198,6 +205,52 @@ class ReplayFeed:
             if not self.loop:
                 break
             self.store.reset()  # replay the session again from the start
+        self.status.state = "stopped"
+
+
+class TickFileFeed:
+    """Replays a recorded tick file (JSONL of raw Kite binary frames: {"t": recv_epoch, "b": base64}) through the
+    exact production path: binary parser -> store -> candle builder. Record one with RECORD_TICKS=<path>."""
+
+    def __init__(self, store: LiveStore, path: str, speed: float = 1.0, loop: bool = False) -> None:
+        self.store, self.path, self.speed, self.loop = store, path, speed, loop
+        self.status = FeedStatus("replay-file")
+        self._stop = asyncio.Event()
+
+    async def stop(self) -> None:
+        self._stop.set()
+
+    def frames(self) -> list[tuple[float, bytes]]:
+        import base64
+
+        out = []
+        with open(self.path, encoding="utf-8") as fh:
+            for line in fh:
+                if line.strip():
+                    j = json.loads(line)
+                    out.append((float(j["t"]), base64.b64decode(j["b"])))
+        return out
+
+    async def run(self) -> None:
+        frames = self.frames()
+        self.status.subscribed = {"frames": len(frames)}
+        if not frames:
+            self.status.state, self.status.last_error = "stopped", "empty tick file"
+            return
+        self.status.state, self.status.connected_since = "replaying", time.time()
+        while not self._stop.is_set():
+            wall0, t0 = time.time(), frames[0][0]
+            for t, data in frames:
+                if self._stop.is_set():
+                    break
+                wait = wall0 + (t - t0) / self.speed - time.time()
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                for tick in parse_message(data):
+                    self.store.apply(tick, "replay")
+            if not self.loop:
+                break
+            self.store.reset()
         self.status.state = "stopped"
 
 

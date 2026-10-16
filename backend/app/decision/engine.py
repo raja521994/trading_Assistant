@@ -243,8 +243,44 @@ def decide(session: Session, now: datetime | None = None, report: dict[str, Any]
         out.update({"decision": "BUY", "message": f"TOP {len(picks)} BUYS", "picks": picks, "skipped": skipped,
                     "watch_only": []})
     else:
+        near = _near_miss_watch(session, report, regime, cfg, now, label, market_open) if not stale else []
         out.update({"decision": "NO TRADE", "message": NO_TRADE_MSG, "picks": [], "skipped": skipped,
-                    "watch_only": _watch_only(report, regime, rejected, blocking, skipped)})
+                    "watch_only": (near + _watch_only(report, regime, rejected, blocking, skipped))[:12]})
+    return out
+
+
+def _near_miss_watch(session: Session, report: dict[str, Any] | None, regime: dict[str, Any], cfg: Any,
+                     now: datetime, label: str, market_open: bool) -> list[dict[str, Any]]:
+    """Live setups from strategies that failed exactly ONE tournament criterion - watch only, never a buy."""
+    if not report:
+        return []
+    near = []
+    for row in report["leaderboard"]:
+        det = report["details"].get(row["id"]) or {}
+        failed = [c for c in det.get("checks") or [] if c.get("passed") is False]
+        if row.get("result") == "FAIL" and len(failed) == 1 and failed[0]["name"] != "point_in_time_universe":
+            near.append({**row, "details": det, "regime_bucket": (det.get("regimes") or {}).get(
+                f"trend:{regime['trend']}") or {}, "failed": failed[0]})
+    if not near:
+        return []
+    recs = _signals(session, near, cfg, now, label, market_open)
+    by_id = {n["id"]: n for n in near}
+    out = []
+    for r in sorted(recs, key=lambda x: -(x.get("score") or 0))[:6]:
+        n = by_id[r["tournament"]["id"]]
+        need = [f"{n['name']} failed only '{n['failed']['name']}': {n['failed']['detail']}"]
+        if regime["exposure_budget_pct"] <= 0:
+            need.append(f"regime budget is 0% ({regime['label']})")
+        b = n["regime_bucket"]
+        if b:
+            need.append(f"in a {regime['trend']} regime this strategy had PF {b.get('profit_factor')} over "
+                        f"{b.get('num_trades')} OOS trades")
+        trig = (r.get("entry") or {}).get("trigger")
+        if r["state"] == "SETUP" and trig:
+            need.append(f"a closed bar must cross the trigger {trig:.2f}")
+        out.append({"symbol": r["symbol"], "exchange": r["exchange"], "strategy": n["id"], "strategy_name": n["name"],
+                    "state": r["state"], "score": r.get("score"), "reference_price": r.get("reference_price"),
+                    "timeframe": r.get("timeframe"), "near_miss": True, "what_must_change": need})
     return out
 
 

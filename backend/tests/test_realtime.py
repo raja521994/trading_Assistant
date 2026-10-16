@@ -180,6 +180,59 @@ def test_kite_ticker_stops_on_auth_error():
     assert feed.status.state == "auth_error" and "access_token" not in (feed.status.last_error or "")
 
 
+def test_replayed_tick_file_integration(tmp_path):
+    """Record raw Kite frames (as KiteTickerFeed does with RECORD_TICKS) and replay the file end-to-end:
+    binary parser -> live store -> 1m/5m candle builder."""
+    import base64
+
+    from app.realtime.feeds import TickFileFeed
+
+    path = tmp_path / "ticks.jsonl"
+    t0 = ist("2026-10-16 10:00:05")
+    prices = [263.0, 263.4, 262.8, 263.9, 264.2, 263.6]
+    with open(path, "w", encoding="utf-8") as fh:
+        for k, px in enumerate(prices):
+            ets = t0 + k * 60  # one tick per minute across two 5-minute bars
+            frame = build_message([build_packet(ITC, px, volume=1000 * (k + 1), ohlc=(262.0, 265.0, 261.0, 262.0),
+                                                exchange_ts=ets),
+                                   build_packet(NIFTY, 25000 + k, index=True, exchange_ts=ets)])
+            fh.write(json.dumps({"t": ets + 0.2, "b": base64.b64encode(frame).decode()}) + "\n")
+            fh.write(json.dumps({"t": ets + 0.5, "b": base64.b64encode(b"\x00").decode()}) + "\n")  # heartbeat
+    s = LiveStore()
+    s.register(ITC, "NSE", "ITC")
+    s.register(NIFTY, "NSE", "NIFTY 50")
+    feed = TickFileFeed(s, str(path), speed=1e9)
+    asyncio.run(feed.run())
+    assert s.get("NSE", "ITC").ltp == pytest.approx(263.6) and s.get("NSE", "ITC").source == "replay"
+    assert s.get("NSE", "NIFTY 50").ltp == pytest.approx(25005)
+    five = s.candles.bars(("NSE", "ITC"), "5m")
+    assert [b.ts for b in five] == [ist("2026-10-16 10:00:00"), ist("2026-10-16 10:05:00")]
+    # ticks at 10:00:05 ... 10:04:05 form the first bar; 10:05:05 opens the second
+    assert (five[0].open, five[0].high, five[0].low, five[0].close) == (263.0, 264.2, 262.8, 264.2)
+    assert five[0].volume == pytest.approx(4000) and five[1].close == pytest.approx(263.6)
+    assert len(s.candles.bars(("NSE", "ITC"), "1m")) == 6
+
+
+def test_kite_ticker_records_frames_for_replay(tmp_path):
+    s = LiveStore()
+    s.register(ITC, "NSE", "ITC")
+    holder = {}
+    rec = tmp_path / "rec.jsonl"
+
+    @contextlib.asynccontextmanager
+    async def connect(url, **kw):
+        ws = FakeWS([b"\x00", build_message([build_packet(ITC, 264.5, exchange_ts=ist("2026-10-16 10:00:00"))])],
+                    holder["feed"])
+        yield ws
+
+    feed = KiteTickerFeed("k", "t", s, [ITC], [], connect=connect, record_path=str(rec))
+    holder["feed"] = feed
+    asyncio.run(feed.run())
+    lines = rec.read_text().strip().splitlines()
+    assert len(lines) == 1  # heartbeat frames are not recorded
+    assert "access_token" not in rec.read_text()
+
+
 # ---------------------------------------------------------------- setup state machine
 
 def test_fsm_long_trigger_fill_and_expiry():
@@ -250,6 +303,19 @@ def test_split_detection_and_back_adjustment():
     assert adj["close"].iloc[3:].tolist() == df["close"].iloc[3:].tolist()
     normal = generate_daily(3, date(2023, 1, 2), date(2023, 12, 29))
     assert all(detect_splits(d) == [] for d in normal.values())
+
+
+def test_configured_nse_holidays_close_the_market(tmp_path, monkeypatch):
+    from app.providers import calendar as cal
+
+    f = tmp_path / "nse_holidays.yaml"
+    f.write_text('holidays:\n  - {date: "2026-10-20", name: "Test holiday"}\n', encoding="utf-8")
+    monkeypatch.setattr(cal, "HOLIDAY_FILE", f)
+    c = cal.TradingCalendar()
+    d = datetime(2026, 10, 20, 11, 0, tzinfo=pd.Timestamp.now("Asia/Kolkata").tzinfo)
+    assert not c.is_trading_day(d.date())
+    assert c.session_state(d).startswith("CLOSED (holiday: Test holiday)")
+    assert c.prev_trading_day(datetime(2026, 10, 21).date()).isoformat() == "2026-10-19"
 
 
 # ---------------------------------------------------------------- no look-ahead, every strategy
