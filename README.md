@@ -81,6 +81,17 @@ strictly **read-only** — it cannot place or modify orders. After connecting, t
 bars and the last 30 days of 5-minute bars for the universe (about a minute), then polls real-time LTP quotes every
 few seconds and new 5-minute bars every minute. Exchange holidays come from the Upstox holiday API.
 
+## Start everything with one command (Windows)
+
+```powershell
+.\start.ps1            # or double-click start.bat
+```
+
+It installs dependencies on first run, starts the backend (http://127.0.0.1:8000) and the dashboard
+(http://127.0.0.1:5173), waits until both respond and opens the browser. Press **Ctrl+C** to stop both.
+Options: `.\start.ps1 -NoBrowser`, `.\start.ps1 -Stop` (stops servers on ports 8000/5173, e.g. after closing the window).
+Logs: `backend\var\logs\`. Then log in with Zerodha in **Data & Integrations** (once per trading day).
+
 ## Quick start (Windows / macOS / Linux)
 
 Prerequisites: **Python 3.11+** with [uv](https://docs.astral.sh/uv/), **Node 18+** with npm. No Docker,
