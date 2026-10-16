@@ -176,9 +176,50 @@ def pct_rank(s: pd.Series, n: int = 252) -> pd.Series:
     return pd.Series(out, index=s.index)
 
 
+def ichimoku(high: pd.Series, low: pd.Series, tenkan: int = 9, kijun: int = 26, senkou: int = 52) -> pd.DataFrame:
+    """Ichimoku lines. Spans A/B are plotted `kijun` bars ahead, so the cloud AT bar i is computed from data up to
+    i - kijun (causal). The lagging span (chikou) is omitted because it would read the future."""
+    conv = (high.rolling(tenkan).max() + low.rolling(tenkan).min()) / 2.0
+    base = (high.rolling(kijun).max() + low.rolling(kijun).min()) / 2.0
+    span_a = ((conv + base) / 2.0).shift(kijun)
+    span_b = ((high.rolling(senkou).max() + low.rolling(senkou).min()) / 2.0).shift(kijun)
+    return pd.DataFrame({"tenkan": conv, "kijun": base, "span_a": span_a, "span_b": span_b}, index=high.index)
+
+
+def obv(close: pd.Series, volume: pd.Series) -> pd.Series:
+    sign = np.sign(close.diff().fillna(0.0))
+    return (sign * volume).cumsum()
+
+
+def ad_line(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series) -> pd.Series:
+    rng = (high - low).replace(0, np.nan)
+    mfm = ((close - low) - (high - close)) / rng
+    return (mfm.fillna(0.0) * volume).cumsum()
+
+
+def confirmed_pivots(high: pd.Series, low: pd.Series, k: int = 3) -> pd.DataFrame:
+    """Swing highs/lows confirmed k bars later (no repainting): `last_ph`/`last_pl` at bar i hold the most recent pivot
+    whose confirmation bar (pivot + k) is <= i; `prev_ph`/`prev_pl` hold the pivot before it."""
+    h, lo = high.to_numpy(float), low.to_numpy(float)
+    m = len(h)
+    cols = {c: np.full(m, np.nan) for c in ("last_ph", "prev_ph", "last_pl", "prev_pl")}
+    lph = pph = lpl = ppl = np.nan
+    for i in range(2 * k, m):
+        p = i - k
+        win_h, win_l = h[p - k:i + 1], lo[p - k:i + 1]
+        if h[p] == win_h.max() and (win_h == h[p]).sum() == 1:
+            pph, lph = lph, h[p]
+        if lo[p] == win_l.min() and (win_l == lo[p]).sum() == 1:
+            ppl, lpl = lpl, lo[p]
+        cols["last_ph"][i], cols["prev_ph"][i], cols["last_pl"][i], cols["prev_pl"][i] = lph, pph, lpl, ppl
+    return pd.DataFrame(cols, index=high.index)
+
+
 INDICATOR_CATALOG = {
     "sma": "Simple moving average", "ema": "Exponential moving average (SMA-seeded)",
     "rsi": "Relative Strength Index (Wilder)", "macd": "MACD 12/26/9", "bollinger": "Bollinger Bands 20/2",
     "atr": "Average True Range (Wilder)", "adx": "Average Directional Index (Wilder)",
     "vwap": "Session VWAP (intraday)", "supertrend": "Supertrend 10/3", "donchian": "Donchian channel",
+    "ichimoku": "Ichimoku 9/26/52 (cloud shifted forward; no chikou)", "obv": "On-balance volume",
+    "ad_line": "Accumulation/distribution line", "confirmed_pivots": "Swing pivots confirmed k bars later",
 }

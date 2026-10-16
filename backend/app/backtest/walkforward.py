@@ -44,7 +44,7 @@ def walk_forward(strategy_id: str, data: dict[tuple[str, str], pd.DataFrame], cf
         key = tuple(sorted(params.items()))
         if key not in prep_cache:
             strat = get_strategy(strategy_id, params)
-            prep_cache[key] = {k: strat.prepare(df, features(k, df, strat.intraday)) for k, df in data.items()}
+            prep_cache[key] = {k: strat.prepare_keyed(k, df, features(k, df, strat.intraday)) for k, df in data.items()}
         return prep_cache[key]
 
     def ts(d, end=False) -> pd.Timestamp:

@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     kite_api_secret: SecretStr | None = None
     kite_access_token: SecretStr | None = None
     kite_token_created: str | None = None  # ISO timestamp of the last successful Zerodha login
+    # Universe for live providers: an NSE index list (nifty50 | nifty100 | nifty200 | nifty500), refreshed weekly
+    # from niftyindices.com and cached in config/universe/. UNIVERSE (explicit symbols) overrides it.
+    universe_index: str = "nifty200"
+    kite_history_start: str = "2018-01-01"
+    kite_intraday_days: int = 30
+    # Research backfill of 5-minute history (strategy tournament) for the most liquid names (NIFTY 50 list).
+    research_intraday_days: int = 365
 
     # Live execution is not implemented. Kept as an explicit, visible flag that must remain False.
     live_trading_enabled: bool = False

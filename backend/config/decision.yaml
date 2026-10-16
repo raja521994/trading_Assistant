@@ -1,0 +1,27 @@
+# Decision engine ("best stocks to buy") configuration. Editable in the AI Scanner page.
+top_n: 5                     # at most N buys per cycle
+min_final_score: 50          # final = score x regime multiplier x gate multiplier
+max_correlation: 0.8         # skip a candidate whose 60-day return correlation with a chosen one exceeds this
+liquidity_participation_pct: 1.0   # position value <= this % of 20-day average daily traded value
+
+# Exposure budget (% of normal risk per trade) by regime trend x volatility (India VIX vs its 1-year median)
+budget:
+  bull:     {low: 100, high: 75}
+  sideways: {low: 50,  high: 25}
+  bear:     {low: 0,   high: 0}
+  unknown:  {low: 0,   high: 0}
+
+# Symbol score weights (normalised to 100)
+weights:
+  validated_edge: 30         # tournament composite score of the signalling strategies
+  confluence: 20             # independent strategy families agreeing
+  relative_strength: 15      # vs NIFTY 50 and the sector index
+  risk_reward: 15            # ATR/structure stop within the cap, MFE-based target
+  participation: 10          # volume confirmation (delivery % and OI not connected)
+  fundamentals_events: 10    # NOT CONNECTED: scored neutral (50) and flagged
+
+# A strategy is suitable for the current regime when its OOS trades in that regime show
+regime_suitability: {min_trades: 20, min_profit_factor: 1.2}
+
+# Decay monitor: paper results of a passed strategy below the lower bound of its OOS expectancy CI disable it
+decay: {min_paper_trades: 10}

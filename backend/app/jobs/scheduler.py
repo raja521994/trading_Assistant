@@ -17,7 +17,7 @@ from ..providers.registry import active_provider
 from ..signals.engine import run_scan_and_persist, update_signal_states
 
 log = logging.getLogger(__name__)
-status: dict[str, Any] = {"startup": "pending", "evidence": "pending", "last_ingest": None, "last_scan": None,
+status: dict[str, Any] = {"startup": "pending", "evidence": "pending", "backfill": "pending", "last_ingest": None, "last_scan": None,
                           "last_tick": None, "errors": []}
 _lock = threading.Lock()
 
@@ -35,6 +35,34 @@ def startup_sync() -> None:
         r = run_scan_and_persist(s)
         status["last_scan"] = {"at": int(time.time()), "count": len(r["recommendations"])}
     status["startup"] = "done"
+
+
+def backfill_job() -> None:
+    """One-off extension of stored history (daily to KITE_HISTORY_START, 5-minute for NIFTY 50 names) used by the
+    strategy tournament. Idempotent; runs after the first scan so the dashboard is usable meanwhile."""
+    from ..data.constituents import load as load_constituents
+    from ..data.ingest import backfill
+
+    p = active_provider()
+    if p.name != "kite":
+        status["backfill"] = "not needed"
+        return
+    s_ = get_settings()
+    status["backfill"] = "running"
+    try:
+        intraday = [r["symbol"] for r in load_constituents("nifty50", allow_network=False)]
+
+        def prog(i: int, n: int, what: str) -> None:
+            status["backfill"] = f"running {i}/{n} ({what})"
+
+        with session_scope() as s:
+            stats = backfill(s, p, s_.kite_history_start, intraday, s_.research_intraday_days, prog, _lock)
+        status["backfill"] = "done"
+        status["last_backfill"] = {**stats, "at": int(time.time())}
+    except Exception as exc:  # noqa: BLE001
+        log.exception("backfill failed")
+        status["backfill"] = "error"
+        _err(f"backfill: {type(exc).__name__}: {exc}")
 
 
 def evidence_job(force: bool = False) -> None:
@@ -101,6 +129,7 @@ def initial_load() -> None:
         status["startup"] = "error"
         _err(f"startup: {type(exc).__name__}: {exc}")
         return
+    backfill_job()
     evidence_job()
 
 
@@ -117,8 +146,34 @@ def switch_provider() -> None:
     threading.Thread(target=initial_load, name="provider-switch", daemon=True).start()
 
 
+def weekly_tournament() -> None:
+    """Re-run the strategy tournament weekly, outside market hours, once history is backfilled."""
+    from ..validation import tournament as tn
+
+    p = active_provider()
+    if p.name == "sample" or status.get("backfill") != "done" or status.get("startup") != "done":
+        return
+    from ..providers.sample import now_ist
+
+    if p.session_state(now_ist()) == "OPEN" or tn.status()["state"] == "running":
+        return
+    runs = tn.list_runs()
+    if runs:
+        last = runs[0]["generated_at"]
+        try:
+            from datetime import datetime
+
+            if (datetime.now().astimezone() - datetime.fromisoformat(last)).days < 7:
+                return
+        except ValueError:
+            pass
+    log.info("starting the scheduled weekly strategy tournament")
+    tn.start_background()
+
+
 def start_background(tasks: list[asyncio.Task]) -> None:
     s = get_settings()
     threading.Thread(target=initial_load, name="initial-load", daemon=True).start()
     tasks.append(asyncio.create_task(_loop(tick, s.quote_refresh_seconds, "tick")))
     tasks.append(asyncio.create_task(_loop(ingest_and_rescan, s.ingest_refresh_seconds, "ingest")))
+    tasks.append(asyncio.create_task(_loop(weekly_tournament, 3600, "tournament-schedule")))

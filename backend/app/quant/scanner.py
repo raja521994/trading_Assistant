@@ -22,7 +22,7 @@ from .regime import classify_regime
 from .scoring import composite, load_weights, score_components
 from .strategies.base import Setup, Strategy, all_strategy_ids, get_strategy
 from ..realtime.service import service as realtime
-from .universe import features, instrument_map, last_row, load_benchmark, load_universe, prepared_with_arrays
+from .universe import LIVE_TAIL, features, instrument_map, last_row, load_benchmark, load_universe, prepared_with_arrays
 from ..signals.setup_fsm import (ACTIVE, EXPIRED, INVALIDATED, SETUP, TRIGGERED, Plan, on_bar_close, on_next_open,
                                  trigger_level)
 
@@ -462,8 +462,8 @@ def scan(session: Session, now: datetime | None = None) -> dict[str, Any]:
     weights = load_weights(session)
     evidence = latest_evidence(session)
     imap = instrument_map(session)
-    daily = load_universe(session, "1d")
-    intraday = load_universe(session, "5m")
+    daily = load_universe(session, "1d", tail=LIVE_TAIL["1d"])
+    intraday = load_universe(session, "5m", tail=LIVE_TAIL["5m"])
     bench = load_benchmark(session)
     bench_ret_63 = None
     if bench is not None and len(bench) > 64:

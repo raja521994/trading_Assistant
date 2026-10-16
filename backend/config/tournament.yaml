@@ -1,0 +1,59 @@
+# Strategy tournament / validation configuration. All thresholds are editable here or in Strategy Lab.
+# A strategy PASSES only if it meets EVERY criterion; criteria are checked in the order listed and the first
+# failure is reported. Do not loosen thresholds until something passes - that is overfitting by another name.
+
+universe: nifty200            # daily strategies (current constituents; survivorship bias disclosed)
+intraday_universe: nifty50    # 5-minute strategies (one year of 5-minute history)
+min_daily_bars: 500           # symbols with less daily history are excluded from daily tests
+min_intraday_sessions: 120
+
+walk_forward:
+  folds: 4                    # anchored: in-sample grows, each out-of-sample segment is unseen
+  embargo_days: 5             # gap between in-sample end and out-of-sample start (purge/embargo)
+  select_by: sharpe           # in-sample objective used to pick parameters from the fixed grid
+
+bootstrap: {samples: 2000, confidence: 0.95, seed: 7}
+
+backtest:
+  capital: 1000000
+  risk_pct: 1.0
+  max_positions: 10
+  max_alloc_pct: 15.0
+
+criteria:
+  min_oos_trades: 30
+  preferred_oos_trades: 100
+  min_profit_factor: 1.2
+  pf_ci_lower_min: 1.0          # lower bound of the bootstrap CI must exceed this
+  expectancy_ci_lower_min: 0.0  # lower bound of expectancy (R) CI must exceed this
+  max_drawdown_pct: 25.0
+  survivorship_min_pf: 1.1      # daily event strategies re-tested on names already established in the first year
+  benchmark_dd_reduction: 0.30  # or: positive return with max drawdown >= 30% lower than NIFTY's
+  stability_perturb_pct: 20.0
+  stability_min_pf: 1.0         # every +/-20% variant must keep PF >= this ...
+  stability_min_expectancy_ratio: 0.5  # ... and at least half the base expectancy
+  min_deflated_sharpe: 0.95     # multiple-testing control (deflated Sharpe ratio)
+  fdr_alpha: 0.05               # Benjamini-Hochberg false-discovery rate (reported)
+  double_costs_min_pf: 1.0      # still profitable with 2x costs and slippage
+  min_subperiods_working: 3
+  min_trades_per_subperiod: 5
+  subperiods:
+    - ["2018-01-01", "2019-12-31", "2018-19"]
+    - ["2020-01-01", "2020-12-31", "2020 crash & recovery"]
+    - ["2021-01-01", "2021-12-31", "2021 rally"]
+    - ["2022-01-01", "2022-12-31", "2022 chop"]
+    - ["2023-01-01", "2030-12-31", "2023-26"]
+
+# Composite strategy score (0-100) for ranking PASSED strategies. Weights are normalised to 100.
+score_weights:
+  edge: 30            # OOS expectancy and profit factor
+  risk_adjusted: 20   # Calmar / risk-adjusted return
+  robustness: 20      # parameter stability + sub-period consistency
+  significance: 15    # deflated Sharpe probability
+  benchmark: 10       # outperformance vs NIFTY 50 total return
+  capacity: 5         # liquidity of traded names
+
+control:
+  random_walk: true   # run daily strategies on a zero-drift random walk; NOTHING may pass
+  symbols: 60
+  seed: 11

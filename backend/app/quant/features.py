@@ -37,10 +37,37 @@ def add_common_features(df: pd.DataFrame, intraday: bool = False) -> pd.DataFram
     return pd.concat([df, pd.DataFrame(cols, index=df.index)], axis=1)
 
 
+class LazyArrays(dict):
+    """Column -> Python list, converted on first access (fast scalar access in bar loops, without materialising
+    the ~40 feature columns a strategy never reads). NaN marks unavailable values."""
+
+    def __init__(self, df: pd.DataFrame) -> None:
+        super().__init__()
+        self._df = df
+
+    def __missing__(self, key: str) -> list:
+        df = self._df
+        if key == "_date":
+            v = list(df.index.date)
+        elif key == "_minute":
+            v = (df.index.hour * 60 + df.index.minute).astype(float).tolist()
+        elif key in df.columns and df[key].dtype.kind in "fiub":
+            v = df[key].to_numpy(dtype=float).tolist()
+        else:
+            raise KeyError(key)
+        self[key] = v
+        return v
+
+    def __contains__(self, key: object) -> bool:
+        return dict.__contains__(self, key) or key in ("_date", "_minute") or (
+            key in self._df.columns and self._df[key].dtype.kind in "fiub")
+
+    def keys(self):  # noqa: ANN201
+        return [c for c in self._df.columns if self._df[c].dtype.kind in "fiub"] + ["_date", "_minute"]
+
+    def get(self, key, default=None):  # noqa: ANN001, ANN201
+        return self[key] if key in self else default
+
+
 def arrays(df: pd.DataFrame) -> dict[str, list]:
-    """Column -> Python list (fast scalar access in bar loops). NaN marks unavailable values."""
-    a: dict[str, list] = {col: df[col].to_numpy(dtype=float).tolist() for col in df.columns
-                          if df[col].dtype.kind in "fiub"}
-    a["_date"] = list(df.index.date)
-    a["_minute"] = (df.index.hour * 60 + df.index.minute).astype(float).tolist()
-    return a
+    return LazyArrays(df)

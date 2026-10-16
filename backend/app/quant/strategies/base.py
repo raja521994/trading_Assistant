@@ -82,6 +82,10 @@ class Strategy:
         """`base` = precomputed common features for `df` (reused across strategies)."""
         return base.copy() if base is not None else add_common_features(df, intraday=self.intraday)
 
+    def prepare_keyed(self, key: tuple[str, str], df: pd.DataFrame, base: pd.DataFrame | None = None) -> pd.DataFrame:
+        """Like prepare(), for strategies that need the instrument identity (e.g. its sector index)."""
+        return self.prepare(df, base)
+
     def entry(self, a: dict[str, np.ndarray], i: int) -> Setup | None:
         raise NotImplementedError
 
@@ -132,7 +136,12 @@ def get_strategy(strategy_id: str, params: dict[str, Any] | None = None) -> Stra
     }
     specs = load_specs()
     if strategy_id not in specs or strategy_id not in classes:
-        raise KeyError(f"Unknown strategy '{strategy_id}'")
+        from ..library.catalog import library_strategy
+
+        try:
+            return library_strategy(strategy_id, params)
+        except KeyError:
+            raise KeyError(f"Unknown strategy '{strategy_id}'") from None
     return classes[strategy_id](specs[strategy_id], params)
 
 

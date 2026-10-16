@@ -131,7 +131,10 @@ export default function RiskPerformance() {
           <Stat label="Drawdown / limit" value={pct(-r.drawdown_pct)} sub={`limit ${r.max_drawdown_pct}%`} />
           <Stat label="Open / max" value={`${r.open_positions} / ${r.max_open_positions}`} />
           <Stat label="Gross exposure" value={`₹${inr(r.gross_exposure, 0)}`} />
-          <Stat label="Risk at stops" value={`₹${inr(r.risk_at_stops, 0)}`} sub={r.kill_switch ? "KILL SWITCH ON" : undefined} />
+          <Stat label="Portfolio heat" value={pct((r.risk_at_stops / Math.max(d.equity, 1)) * 100, 2, false)} sub={`₹${inr(r.risk_at_stops, 0)} at stops${r.kill_switch ? " · KILL SWITCH ON" : ""}`} />
+        </div>
+        <div className={clsx("mt-2 rounded border px-2 py-1 text-xs", r.daily_loss >= r.daily_loss_limit || r.kill_switch ? "border-red-800 bg-red-950/30 text-red-200" : "border-ink-700 text-slate-400")}>
+          New entries: {r.kill_switch ? "HALTED (kill switch on)" : r.daily_loss >= r.daily_loss_limit ? `HALTED - daily loss ₹${inr(r.daily_loss, 0)} reached the limit ₹${inr(r.daily_loss_limit, 0)}` : `allowed - ₹${inr(Math.max(r.daily_loss_limit - r.daily_loss, 0), 0)} of daily loss budget left`}. Portfolio heat = total loss if every open position hits its stop, as % of equity.
         </div>
         {r.sector_exposure.length > 0 && (
           <table className="tbl mt-3"><thead><tr><th>Sector</th><th className="text-right">Exposure</th><th className="text-right">% equity</th><th className="text-right">Limit</th></tr></thead>

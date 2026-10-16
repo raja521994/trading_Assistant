@@ -26,7 +26,8 @@ def all_providers() -> dict[str, MarketDataProvider]:
         "kite": KiteProvider(
             s.kite_api_key.get_secret_value() if s.kite_api_key else None,
             s.kite_access_token.get_secret_value() if s.kite_access_token else None,
-            s.kite_token_created, universe, s.yahoo_history_start, s.yahoo_intraday_days,
+            s.kite_token_created, universe, s.kite_history_start, s.kite_intraday_days,
+            universe_index=None if universe else s.universe_index,
         ),
         "sample": SampleProvider(s.sample_seed, s.sample_start_date, s.sample_intraday_sessions),
     }

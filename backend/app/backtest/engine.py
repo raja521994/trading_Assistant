@@ -100,9 +100,11 @@ class _Sym:
 
 def run_portfolio(strategy: Strategy, data: dict[tuple[str, str], pd.DataFrame], cfg: BTConfig,
                   prepared: dict[tuple[str, str], pd.DataFrame] | None = None) -> dict[str, Any]:
+    if hasattr(strategy, "run_custom"):  # portfolio / pairs strategies have their own execution model
+        return strategy.run_custom(prepared or data, cfg)  # type: ignore[attr-defined]
     syms: list[_Sym] = []
     for (exch, sym), df in data.items():
-        p = prepared[(exch, sym)] if prepared and (exch, sym) in prepared else strategy.prepare(df)
+        p = prepared[(exch, sym)] if prepared and (exch, sym) in prepared else strategy.prepare_keyed((exch, sym), df)
         idx = p.index
         win = np.ones(len(p), dtype=bool)
         if cfg.start is not None:

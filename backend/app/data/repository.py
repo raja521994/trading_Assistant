@@ -33,12 +33,22 @@ class CandleStore:
         self._lock = threading.Lock()
         self._version = 0
         self._cache: dict[tuple[int, str], tuple[int, pd.DataFrame]] = {}
+        self._stale: set[tuple[int, str]] = set()
         self.adjustments: dict[int, list[dict]] = {}  # instrument_id -> detected split/bonus back-adjustments
 
-    def invalidate(self) -> None:
+    def invalidate(self, keys: "list[tuple[int, str]] | None" = None) -> None:
+        """Drop cached series: only `keys` (instrument_id, timeframe) when given, otherwise everything."""
         with self._lock:
-            self._version += 1
-            self._cache.clear()
+            if keys is None:
+                self._version += 1
+                self._cache.clear()
+                self._stale.clear()
+            else:
+                for k in keys:
+                    if k[1] == "1d":
+                        self._cache.pop(k, None)  # daily: full reload (split/bonus adjustment needs the whole series)
+                    elif k in self._cache:
+                        self._stale.add(k)  # intraday: append new bars on next load
 
     @property
     def version(self) -> int:
@@ -49,17 +59,22 @@ class CandleStore:
         with self._lock:
             hit = self._cache.get(key)
             version = self._version
-        if hit is not None and hit[0] == version:
+            stale = key in self._stale
+        if hit is not None and hit[0] == version and not stale:
             return hit[1]
-        rows = session.execute(
-            select(Candle.ts, Candle.open, Candle.high, Candle.low, Candle.close, Candle.volume)
-            .where(Candle.instrument_id == instrument_id, Candle.timeframe == timeframe)
-            .order_by(Candle.ts)
-        ).all()
+        q = select(Candle.ts, Candle.open, Candle.high, Candle.low, Candle.close, Candle.volume).where(
+            Candle.instrument_id == instrument_id, Candle.timeframe == timeframe)
+        base = None
+        if stale and hit is not None and hit[0] == version and len(hit[1]):
+            base = hit[1]
+            q = q.where(Candle.ts >= int(base.index[-1].timestamp()))  # re-read the last bar + anything newer
+        rows = session.execute(q.order_by(Candle.ts)).all()
         df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "volume"])
         idx = pd.DatetimeIndex(pd.to_datetime(df["ts"].astype("int64"), unit="s", utc=True)).tz_convert(IST)
         df = df.drop(columns="ts").astype(float)
         df.index = idx.rename("ts")
+        if base is not None:
+            df = pd.concat([base[base.index < df.index[0]] if len(df) else base, df])
         if timeframe == "1d" and len(df):
             from .corporate_actions import adjust_for_splits
 
@@ -69,6 +84,7 @@ class CandleStore:
         with self._lock:
             if self._version == version:
                 self._cache[key] = (version, df)
+                self._stale.discard(key)
         return df
 
 

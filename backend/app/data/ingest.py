@@ -68,6 +68,7 @@ def ingest(session: Session, provider: MarketDataProvider, timeframes: tuple[str
     instruments = sync_instruments(session, provider)
     caps = provider.capabilities()
     inserted = written = 0
+    changed: list[tuple[int, str]] = []
     errors: list[str] = []
     ids = [i.id for i in instruments.values()]
     # Self-repair: intraday bars must sit exactly on bar boundaries (earlier builds could store misaligned bars).
@@ -111,12 +112,88 @@ def ingest(session: Session, provider: MarketDataProvider, timeframes: tuple[str
             session.execute(insert(Candle), rows)
             inserted += len(rows) - (1 if last is not None and min(ts) == last else 0)
             written += len(rows)
+            changed.append((inst.id, tf))
     session.flush()
     stats = {"provider": provider.name, "instruments": len(instruments), "candles_inserted": inserted,
              "candles_written": written, "errors": errors, "seconds": round(time.perf_counter() - t0, 2)}
     if written:
         from .repository import candle_store
 
-        candle_store.invalidate()
+        candle_store.invalidate(changed)
     log.info("ingest complete: %s", {k: v for k, v in stats.items() if k != "errors"})
+    return stats
+
+
+def backfill(session: Session, provider: MarketDataProvider, daily_start: Any = None,
+             intraday_symbols: list[str] | None = None, intraday_days: int = 0, progress: Any = None,
+             db_lock: Any = None) -> dict[str, Any]:
+    """Extend stored history BACKWARDS (ingest() only moves forward): daily bars to `daily_start` for every
+    instrument and 5-minute bars `intraday_days` back for `intraday_symbols`. Each (instrument, timeframe, start)
+    is attempted once (a marker is stored), so instruments listed after the start date are not re-requested."""
+    import datetime as dt
+
+    from ..providers.calendar import IST
+
+    import contextlib
+
+    lock = db_lock or contextlib.nullcontext()
+    t0 = time.perf_counter()
+    with lock:
+        instruments = sync_instruments(session, provider)
+        session.commit()
+    now = pd.Timestamp.now(tz=IST)
+    plans: list[tuple[Instrument, str, pd.Timestamp]] = []
+    if daily_start is not None:
+        ds = pd.Timestamp(daily_start).tz_localize(IST) if pd.Timestamp(daily_start).tzinfo is None \
+            else pd.Timestamp(daily_start)
+        plans += [(inst, "1d", ds) for inst in instruments.values()]
+    if intraday_symbols and intraday_days > 0:
+        want = set(intraday_symbols)
+        istart = (now - pd.Timedelta(days=intraday_days)).normalize() + pd.Timedelta(hours=9, minutes=15)
+        plans += [(inst, "5m", istart) for (ex, sym), inst in instruments.items()
+                  if sym in want and inst.instrument_type == "EQ"]
+    written, errors, done = 0, [], 0
+    for n, (inst, tf, start) in enumerate(plans):
+        if progress:
+            progress(n, len(plans), f"{inst.symbol} {tf}")
+        marker = f"backfill:{provider.name}:{inst.exchange}:{inst.symbol}:{tf}:{start.date().isoformat()}"
+        if session.get(AppSetting, marker) is not None:
+            continue
+        first = session.scalar(select(func.min(Candle.ts)).where(Candle.instrument_id == inst.id,
+                                                                  Candle.timeframe == tf))
+        session.commit()  # end the read transaction before the (slow) network fetch
+        if first is None:
+            continue  # nothing stored yet: the regular ingest fetches the full range
+        gap = dt.timedelta(days=5) if tf == "1d" else dt.timedelta(days=2)
+        first_ts = pd.Timestamp(first, unit="s", tz="UTC").tz_convert(IST)
+        if first_ts - start > gap:
+            try:
+                df = provider.candles(inst.symbol, inst.exchange, tf, start=start,
+                                      end=first_ts - pd.Timedelta(seconds=1))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{inst.exchange}:{inst.symbol} {tf}: {type(exc).__name__}: {exc}")
+                continue
+            if not df.empty:
+                ts = df.index.tz_convert("UTC").as_unit("s").asi8.tolist()
+                rows = [{"instrument_id": inst.id, "timeframe": tf, "ts": t, "open": float(o), "high": float(h),
+                         "low": float(lo), "close": float(c), "volume": float(v)}
+                        for t, o, h, lo, c, v in zip(ts, df["open"], df["high"], df["low"], df["close"],
+                                                     df["volume"], strict=True)
+                        if t < first and (tf == "1d" or t % 300 == 0)]
+                if rows:
+                    with lock:
+                        session.execute(insert(Candle), rows)
+                        session.commit()
+                    written += len(rows)
+        with lock:
+            session.add(AppSetting(key=marker, value="done", updated_at=int(time.time())))
+            session.commit()
+        done += 1
+    if written:
+        from .repository import candle_store
+
+        candle_store.invalidate()
+    stats = {"planned": len(plans), "fetched": done, "candles_written": written, "errors": errors[:20],
+             "seconds": round(time.perf_counter() - t0, 1)}
+    log.info("backfill complete: %s", {k: v for k, v in stats.items() if k != "errors"})
     return stats

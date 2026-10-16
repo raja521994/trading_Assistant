@@ -7,6 +7,7 @@ import { inr, istTime, num, titleCase } from "../lib/format";
 import { ActionBadge, DataLabel, Empty, ErrorBox, Loading, Panel, ScoreBar, StateBadge } from "../components/ui";
 import { PaperTradeBox, RecommendationDetail } from "../components/Recommendation";
 import { LivePrice, StaleBadge } from "../components/Live";
+import { DecisionPanel } from "../components/Decision";
 
 type Tab = "buy" | "watch" | "all";
 
@@ -55,6 +56,8 @@ export default function Scanner() {
         {d && <span className="text-xs text-slate-500">{d.total} candidates · generated {istTime(d.generated_at)} IST · {Object.entries(d.counts).map(([k, v]) => `${k} ${v}`).join(" · ")}</span>}
         <button className="btn ml-auto" onClick={() => refresh.mutate()} disabled={refresh.isPending}>{refresh.isPending ? "Scanning…" : "Re-scan now"}</button>
       </div>
+
+      <DecisionPanel />
 
       {d && (
         <Panel bodyClass="p-2">

@@ -30,6 +30,8 @@ SUGGESTED = [
     "How did the Donchian strategy perform out of sample?",
     "Which stocks show improving relative strength?",
     "What changed in the current market regime?",
+    "What should I buy today?",
+    "Which strategies passed the tournament?",
 ]
 
 
@@ -100,7 +102,14 @@ def answer(session: Session, question: str, signal_id: int | None = None) -> dic
     intent = "help"
     exp = Explanation()
 
-    if "regime" in ql:
+    if any(w in ql for w in ("tournament", "which strateg", "top strateg", "passed", "best strateg")):
+        intent = "tournament"
+        exp = _tournament()
+    elif any(w in ql for w in ("what should i buy", "what to buy", "best stock", "stocks to buy", "buy today",
+                               "should i buy", "any buy", "recommend")):
+        intent = "decision"
+        exp = _decision(session)
+    elif "regime" in ql:
         intent = "regime"
         exp = _regime(session)
     elif "relative strength" in ql or re.search(r"\brs\b", ql):
@@ -144,6 +153,12 @@ def answer(session: Session, question: str, signal_id: int | None = None) -> dic
             else:
                 intent = "explain_signal"
                 exp = full
+            if rec.get("blocked") or rec.get("action") not in ("BUY", "SELL"):
+                exp.interpretation = [f"This is NOT a buy: {sig.symbol} / {rec.get('strategy_name')} is "
+                                      f"{rec.get('action')} - blocked by "
+                                      f"{', '.join(rec.get('blocked_by') or []) or 'its action rules'}. Only setups "
+                                      "from tournament-passed strategies in a suitable regime are actionable."] + \
+                    list(exp.interpretation)
     else:
         exp = Explanation(facts=["I answer from computed scanner, backtest and market data only."],
                           interpretation=["Try one of the suggested questions, naming a symbol or strategy."])
@@ -174,13 +189,53 @@ def suggested_questions() -> list[str]:
     return out
 
 
+def _tournament() -> Explanation:
+    from ..validation.tournament import load_report
+
+    rep = load_report()
+    if not rep:
+        return Explanation(facts=["No strategy tournament has been run yet."],
+                           interpretation=["Run it from Strategy Lab; until then no strategy has a validated edge."])
+    facts = [f"Tournament run {rep['run_id']} ({rep['generated_at']}, data {rep['data_label']}): {rep['headline']}"]
+    for r in rep["top10"]:
+        facts.append(f"#{r['rank']} {r['name']}: {r['oos_trades']} OOS trades, PF {r['profit_factor']} "
+                     f"(95% CI {r['pf_ci']}), expectancy {r['expectancy_r']}R, net {r['net_return_pct']}% vs NIFTY "
+                     f"{r['benchmark_return_pct']}%, max DD {r['max_drawdown_pct']}%.")
+    fails = [r for r in rep["leaderboard"] if r["result"] == "FAIL"][:8]
+    calcs = [f"{r['name']}: FAIL at '{r['first_failed']}' - {r.get('first_failed_detail') or ''}" for r in fails]
+    return Explanation(facts=facts, calculations=calcs, assumptions=[rep["data"]["survivorship_note"]],
+                       interpretation=rep["summary"][:4], sources=[f"tournament:{rep['run_id']}"])
+
+
+def _decision(session: Session) -> Explanation:
+    from ..decision.engine import decide
+
+    d = decide(session)
+    facts = [f"Decision engine at {d['generated_at']} ({d['data_label']}): {d['message']}",
+             f"Regime: {d['regime']['label']}, exposure budget {d['regime']['exposure_budget_pct']:.0f}%."]
+    facts += [f"Gate {g['name']}: {'pass' if g['passed'] else 'FAIL' if g['passed'] is False else 'UNKNOWN'} - "
+              f"{g['detail']}" for g in d["gates"]]
+    calcs = [f"{p['symbol']}: entry trigger {p['entry_trigger']}, stop {p['stop']}, qty {p['qty']}, max loss Rs "
+             f"{p['max_loss']:,.0f}, final score {p['final_score']}, expectancy range "
+             f"{p['confidence']['expectancy_r_range']}R" for p in d["picks"]]
+    if d["decision"] != "BUY":
+        interp = ["I will not suggest a buy: no setup passes every gate. "
+                  "Nearest watch-only candidates: " +
+                  "; ".join(f"{w['symbol']} ({'; '.join(w['what_must_change'][:2])})" for w in d["watch_only"][:3])]
+    else:
+        interp = ["These are paper-trading candidates from tournament-validated strategies only; event risk is "
+                  "UNKNOWN (results dates / F&O ban not connected) - verify before acting. Not investment advice."]
+    return Explanation(facts=facts, calculations=calcs, interpretation=interp,
+                       sources=[f"decision:{d['generated_at']}", f"tournament:{d.get('tournament_run')}"])
+
+
 def _no_signal(session: Session, symbol: str | None) -> Explanation:
     from ..quant.universe import features, last_row
 
     facts = [f"{symbol} has no active scanner signal from any of the {len(load_specs())} strategies."]
     imap = instrument_map(session)
     key = next((k for k in imap if k[1] == symbol), None)
-    data = load_universe(session, "1d")
+    data = load_universe(session, "1d", tail=750)
     if key and key in data:
         f = last_row(features(key, data[key]))
         ts = data[key].index[-1].isoformat()
@@ -193,7 +248,7 @@ def _no_signal(session: Session, symbol: str | None) -> Explanation:
 
 def _regime(session: Session) -> Explanation:
     bench = load_benchmark(session)
-    r = classify_regime(bench, load_universe(session, "1d")) if bench is not None else None
+    r = classify_regime(bench, load_universe(session, "1d", tail=750)) if bench is not None else None
     if not r or not r.get("current"):
         return Explanation(facts=["Benchmark data unavailable - regime cannot be classified."])
     cur, prev = r["current"], r["previous"]
@@ -210,7 +265,7 @@ def _regime(session: Session) -> Explanation:
 
 def _relative_strength(session: Session) -> Explanation:
     bench = load_benchmark(session)
-    data = load_universe(session, "1d")
+    data = load_universe(session, "1d", tail=750)
     if bench is None or not data:
         return Explanation(facts=["Benchmark or universe data unavailable."])
     b = bench["close"]

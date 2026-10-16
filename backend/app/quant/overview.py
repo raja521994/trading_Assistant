@@ -12,9 +12,10 @@ from ..data.repository import list_instruments
 from ..providers.registry import active_provider, provider_fallback_reason
 from ..providers.sample import now_ist
 from .regime import classify_regime
-from .universe import features, instrument_map, last_row, load_benchmark, load_universe
+from .universe import LIVE_TAIL, features, instrument_map, last_row, load_benchmark, load_universe
 
 OVERVIEW_INDICES = ["NIFTY 50", "NIFTY BANK", "NIFTY FIN SERVICE", "SENSEX"]
+HIDDEN_SERIES = {"NIFTY50 DIV POINT"}  # data series used for the total-return benchmark, not a tradable index
 
 
 def _chg(df: pd.DataFrame, n: int) -> float | None:
@@ -28,8 +29,8 @@ def market_overview(session: Session) -> dict[str, Any]:
     now = now_ist()
     label = provider.capabilities().data_status.value
     imap = instrument_map(session)
-    daily = load_universe(session, "1d")
-    idx_daily = load_universe(session, "1d", "INDEX")
+    daily = load_universe(session, "1d", tail=LIVE_TAIL["1d"])
+    idx_daily = load_universe(session, "1d", "INDEX", tail=LIVE_TAIL["1d"])
 
     def live(exch: str, sym: str, df: pd.DataFrame) -> dict[str, Any]:
         q = provider.quote(sym, exch)
@@ -46,7 +47,7 @@ def market_overview(session: Session) -> dict[str, Any]:
                                                                      OVERVIEW_INDICES.index(kv[0][1])
                                                                      if kv[0][1] in OVERVIEW_INDICES else 99,
                                                                      kv[0][1])):
-        if len(df) < 2:
+        if len(df) < 2 or sym in HIDDEN_SERIES:
             continue
         indices.append({"symbol": sym, "exchange": exch, "name": imap[(exch, sym)].name, **live(exch, sym, df),
                         "change_1w_pct": _chg(df, 5), "change_1m_pct": _chg(df, 21),

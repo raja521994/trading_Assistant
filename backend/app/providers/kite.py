@@ -47,6 +47,14 @@ INDEX_SYMBOLS: dict[str, tuple[str, str, str]] = {
     "NIFTY FMCG": ("NSE", "NIFTY FMCG", "NIFTY FMCG"),
     "NIFTY METAL": ("NSE", "NIFTY METAL", "NIFTY METAL"),
     "NIFTY ENERGY": ("NSE", "NIFTY ENERGY", "NIFTY ENERGY"),
+    "NIFTY REALTY": ("NSE", "NIFTY REALTY", "NIFTY REALTY"),
+    "NIFTY INFRA": ("NSE", "NIFTY INFRA", "NIFTY INFRASTRUCTURE"),
+    "NIFTY CONSUMPTION": ("NSE", "NIFTY CONSUMPTION", "NIFTY INDIA CONSUMPTION"),
+    "NIFTY PSU BANK": ("NSE", "NIFTY PSU BANK", "NIFTY PSU BANK"),
+    "NIFTY 200": ("NSE", "NIFTY 200", "NIFTY 200"),
+    "NIFTY200 MOMENTUM 30": ("NSE", "NIFTY200MOMENTM30", "NIFTY200 MOMENTUM 30"),
+    "INDIA VIX": ("NSE", "INDIA VIX", "INDIA VIX"),
+    "NIFTY50 DIV POINT": ("NSE", "NIFTY50 DIV POINT", "NIFTY 50 DIVIDEND POINTS"),
 }
 MAX_DAYS = {"day": 2000, "5minute": 100}
 
@@ -122,10 +130,20 @@ class KiteProvider(MarketDataProvider):
 
     def __init__(self, api_key: str | None, access_token: str | None, token_created: str | None = None,
                  universe: list[str] | None = None, history_start: str = "2023-01-01", intraday_days: int = 30,
-                 transport: httpx.BaseTransport | None = None, clock=_now_ist) -> None:
+                 transport: httpx.BaseTransport | None = None, clock=_now_ist, universe_index: str | None = None
+                 ) -> None:
         self._api_key = api_key
         self._token = access_token
         self._token_created = token_created
+        self.sectors: dict[str, str | None] = dict(DEFAULT_UNIVERSE)
+        self.universe_index = universe_index
+        if universe is None and universe_index:
+            from ..data.constituents import load as load_constituents
+
+            rows = [r for r in load_constituents(universe_index) if r.get("series", "EQ") == "EQ"]
+            if rows:
+                universe = [r["symbol"] for r in rows]
+                self.sectors.update({r["symbol"]: r["industry"] for r in rows})
         self.universe = universe or list(DEFAULT_UNIVERSE.keys())
         self.history_start = date.fromisoformat(history_start)
         self.intraday_days = min(max(intraday_days, 1), 60)
@@ -257,7 +275,7 @@ class KiteProvider(MarketDataProvider):
                 continue
             tokens[("NSE", sym)] = int(r["instrument_token"])
             keys[("NSE", sym)] = f"NSE:{sym}"
-            infos.append(InstrumentInfo(sym, "NSE", r.get("name") or sym, "EQ", DEFAULT_UNIVERSE.get(sym),
+            infos.append(InstrumentInfo(sym, "NSE", r.get("name") or sym, "EQ", self.sectors.get(sym),
                                         int(float(r.get("lot_size") or 1)), float(r.get("tick_size") or 0.05),
                                         r["instrument_token"]))
         for sym, (exch, ts, name) in INDEX_SYMBOLS.items():
@@ -379,6 +397,8 @@ class KiteProvider(MarketDataProvider):
         now = self.clock()
         today = now.date()
         naive_now = now.replace(tzinfo=None)
+        if end is not None:  # backfill of an older range: don't download up to now
+            naive_now = min(naive_now, pd.Timestamp(end).tz_convert(IST).tz_localize(None).to_pydatetime())
         if timeframe == "1d":
             s = pd.Timestamp(start).tz_convert(IST).date() if start is not None else self.history_start
             df = self._historical(token, "day", datetime.combine(s, time(0, 0)), naive_now)
@@ -466,19 +486,20 @@ class KiteProvider(MarketDataProvider):
         return ProviderCapabilities(
             timeframes=["1d", "5m"], data_status=DataStatus.LIVE if self.enabled else DataStatus.UNAVAILABLE,
             exchanges=["NSE", "BSE"], instrument_types=["EQ", "INDEX"], supports_quotes=True,
-            supports_streaming=False, supports_depth=False, supports_oi=False, supports_option_chain=False,
+            supports_streaming=True, supports_depth=True, supports_oi=False, supports_option_chain=False,
             supports_fundamentals=False, supports_corporate_actions=False, supports_news=False, supports_orders=False,
             history_note=(f"Daily from {self.history_start.isoformat()}; 5-minute bars for the last "
-                          f"{self.intraday_days} days plus today's completed bars; quotes polled every few seconds"),
-            missing_fields=["market depth (not used)", "open interest", "implied volatility", "Greeks", "option chain",
+                          f"{self.intraday_days} days (one year for NIFTY 50 names after the research backfill); "
+                          "live ticks via the KiteTicker WebSocket"),
+            missing_fields=["open-interest history", "implied volatility", "Greeks", "option-chain history",
                             "fundamentals", "corporate actions", "delivery statistics", "news / announcements"],
             requires=["Kite Connect developer app (API key + secret) with market-data access",
                       "Daily login via the official Zerodha redirect flow"],
             needs_verification=[
                 "Your Kite Connect plan includes live quotes and historical candles (otherwise PermissionException)",
-                "Universe is a static NIFTY 50-style list; verify against current index constituents",
+                (f"Universe = current {self.universe_index.upper()} constituents (niftyindices.com); not point-in-time"
+                 if self.universe_index else "Universe is a static list; verify against current index constituents"),
                 "Holidays are inferred (Kite has no holiday API); exchange calendar edge cases may need review",
-                "KiteTicker WebSocket streaming is not wired yet (REST polling every few seconds)",
             ],
         )
 

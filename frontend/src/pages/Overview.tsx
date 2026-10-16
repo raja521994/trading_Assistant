@@ -51,6 +51,23 @@ function MoverTable({ rows, metric }: { rows: Row[]; metric: "change" | "volume"
   );
 }
 
+type RegimeResp = { trend: string; volatility: string; label: string; exposure_budget_pct: number;
+  inputs: { name: string; value: number | null; detail?: string | null; status: string }[] };
+
+function RegimeInputs() {
+  const q = useQuery({ queryKey: ["regime"], queryFn: () => api.get<RegimeResp>("/regime"), refetchInterval: 30_000 });
+  if (!q.data) return null;
+  const r = q.data;
+  return (
+    <div className="mt-2 border-t border-ink-700 pt-2 text-xs">
+      <div className="text-slate-300">Decision regime: <span className="font-semibold text-slate-100">{r.label}</span> · exposure budget <span className="num">{r.exposure_budget_pct}%</span></div>
+      <table className="tbl mt-1"><tbody>{r.inputs.map((i) => (
+        <tr key={i.name}><td>{i.name}</td><td className="num text-right">{i.value == null ? "—" : num(i.value)}</td>
+          <td className={i.status === "ok" ? "text-slate-500" : "text-amber-300"}>{i.status === "ok" ? (i.detail ?? "") : i.status.toUpperCase()}</td></tr>))}</tbody></table>
+    </div>
+  );
+}
+
 function IndexChange({ i }: { i: IndexRow }) {
   const t = useLiveTick(i.exchange, i.symbol);
   const ch = t?.ch ?? i.change;
@@ -107,6 +124,7 @@ export default function Overview() {
               <div className="label pt-1">What changed (20 sessions)</div>
               <ul className="text-xs text-slate-300 space-y-0.5">{d.regime!.changes.map((c, i) => <li key={i}>• {c}</li>)}</ul>
               <div className="text-[10px] text-slate-500">Rules: close vs SMA50/200 + ADX≥20; 20d realised-vol percentile; % of universe above 50-day average.</div>
+              <RegimeInputs />
             </div>
           ) : <Empty>Regime unavailable</Empty>}
         </Panel>

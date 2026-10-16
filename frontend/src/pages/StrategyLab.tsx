@@ -5,6 +5,7 @@ import { api, type CurvePoint, type Evidence, type Trade } from "../lib/api";
 import { inr, istTime, num, pct, tone } from "../lib/format";
 import { DataLabel, Empty, ErrorBox, KV, Loading, Panel, Pill, Stat } from "../components/ui";
 import { LinesChart, type Overlay } from "../components/Charts";
+import { TournamentPanel } from "../components/Tournament";
 
 interface StrategySpec {
   id: string; name: string; version: string; category: string; modes: string[]; timeframe: string; direction: string;
@@ -151,6 +152,7 @@ export default function StrategyLab() {
   return (
     <div className="space-y-3">
       <h1 className="text-lg font-semibold">Strategy Lab</h1>
+      <TournamentPanel />
       {strats.isLoading && <Loading />}
       {strats.error && <ErrorBox error={strats.error} />}
       {strats.data && (
