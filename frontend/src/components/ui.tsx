@@ -39,6 +39,7 @@ const STATE_STYLE: Record<string, string> = {
   WATCH: "text-slate-300 border-slate-600",
   SETUP: "text-sky-300 border-sky-700",
   TRIGGERED: "text-emerald-300 border-emerald-700",
+  ACTIVE: "bg-emerald-900/40 text-emerald-200 border-emerald-600",
   INVALIDATED: "text-red-300 border-red-800",
   EXITED: "text-violet-300 border-violet-700",
   EXPIRED: "text-slate-400 border-slate-700",

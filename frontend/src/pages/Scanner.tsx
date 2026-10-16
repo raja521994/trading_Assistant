@@ -6,6 +6,9 @@ import { api, qs, type Recommendation, type ScanResponse } from "../lib/api";
 import { inr, istTime, num, titleCase } from "../lib/format";
 import { ActionBadge, DataLabel, Empty, ErrorBox, Loading, Panel, ScoreBar, StateBadge } from "../components/ui";
 import { PaperTradeBox, RecommendationDetail } from "../components/Recommendation";
+import { LivePrice, StaleBadge } from "../components/Live";
+
+type Tab = "buy" | "watch" | "all";
 
 interface Filters { mode: string; exchange: string; strategy: string; state: string; action: string; risk: string; liquidity: string; min_score: string }
 const EMPTY: Filters = { mode: "", exchange: "", strategy: "", state: "", action: "", risk: "", liquidity: "", min_score: "" };
@@ -25,6 +28,7 @@ function Select({ label, value, options, onChange }: { label: string; value: str
 export default function Scanner() {
   const [f, setF] = useState<Filters>(EMPTY);
   const [selected, setSelected] = useState<Recommendation | null>(null);
+  const [tab, setTab] = useState<Tab>("buy");
   const qc = useQueryClient();
   const q = useQuery({
     queryKey: ["scanner", f],
@@ -38,6 +42,10 @@ export default function Scanner() {
   const set = (k: keyof Filters) => (v: string) => setF((p) => ({ ...p, [k]: v }));
   const d = q.data;
   const availableModes = d ? d.filters.modes.filter((m) => !(m in d.filters.unavailable_modes)) : [];
+  const all = d?.recommendations ?? [];
+  const buyNow = all.filter((r) => !r.blocked);
+  const watchOnly = all.filter((r) => r.blocked);
+  const rows = tab === "buy" ? buyNow : tab === "watch" ? watchOnly : all;
 
   return (
     <div className="space-y-3">
@@ -97,17 +105,20 @@ export default function Scanner() {
 
       {d && (
         <div className={clsx("grid gap-3", selected ? "grid-cols-1 2xl:grid-cols-[minmax(0,1fr)_560px]" : "grid-cols-1")}>
-          <Panel title="Ranked candidates" right={<span className="text-slate-500">click a row for the drill-down</span>} bodyClass="p-0 overflow-auto max-h-[70vh]">
-            {d.recommendations.length === 0 ? <Empty>No candidates match these filters.</Empty> : (
+          <Panel title={<span className="flex items-center gap-1">
+              {([["buy", `Buy now (${buyNow.length})`], ["watch", `Watch only — blocked (${watchOnly.length})`], ["all", `All signals (${all.length})`]] as [Tab, string][]).map(([k, label]) => (
+                <button key={k} onClick={() => setTab(k)} className={clsx("rounded px-2 py-0.5 text-xs", tab === k ? "bg-sky-900/60 text-sky-200" : "text-slate-400 hover:text-slate-200")}>{label}</button>))}
+            </span>} right={<span className="text-slate-500">ranked by final score · click a row for the drill-down</span>} bodyClass="p-0 overflow-auto max-h-[70vh]">
+            {rows.length === 0 ? <Empty>{tab === "buy" ? "NO TRADE — no setup passes every gate right now. See Watch only for blocked setups and why." : "No candidates match these filters."}</Empty> : (
               <table className="tbl">
                 <thead><tr>
                   <th>Symbol</th><th>Strategy</th><th>Mode</th><th>State</th><th>Action</th><th>Dir</th>
-                  <th className="text-right">Ref</th><th className="text-right">Entry</th><th className="text-right">Stop</th>
+                  <th className="text-right">Live</th><th className="text-right">Trigger / fill</th><th className="text-right">Stop</th>
                   <th className="text-right">Target</th><th className="text-right">R:R</th><th className="text-right">Qty</th>
-                  <th>Score</th><th>Risk</th><th>Liq</th>
+                  <th className="text-right">Final</th><th>Score</th><th>Confl.</th><th>Gates</th><th>Risk</th><th>Liq</th>
                 </tr></thead>
                 <tbody>
-                  {d.recommendations.map((r) => (
+                  {rows.map((r) => (
                     <tr key={`${r.strategy}:${r.exchange}:${r.symbol}`} onClick={() => setSelected(r)}
                       className={clsx("cursor-pointer", selected?.signal_id === r.signal_id && "bg-ink-800")}>
                       <td><span className="font-semibold text-slate-100">{r.symbol}</span> <span className="text-[10px] text-slate-500">{r.exchange}</span></td>
@@ -116,13 +127,18 @@ export default function Scanner() {
                       <td><StateBadge state={r.state} /></td>
                       <td><ActionBadge action={r.action} /></td>
                       <td className={r.direction === "bullish" ? "text-up" : r.direction === "bearish" ? "text-down" : "text-slate-400"}>{r.direction}</td>
-                      <td className="num text-right">{inr(r.reference_price)}</td>
-                      <td className="num text-right">{r.state === "WATCH" ? "—" : inr(r.entry.reference)}</td>
+                      <td className="text-right whitespace-nowrap"><LivePrice exchange={r.exchange} symbol={r.symbol} fallback={r.reference_price} />
+                        <StaleBadge exchange={r.exchange} symbol={r.symbol} marketOpen={r.freshness.market_session === "OPEN"} /></td>
+                      <td className="num text-right">{r.state === "WATCH" ? "—" : r.entry.filled != null ? <span title="filled at next open">{inr(r.entry.filled)}</span> : inr(r.entry.trigger ?? r.entry.reference)}</td>
                       <td className="num text-right text-down">{inr(r.stop_loss)}</td>
                       <td className="num text-right text-up">{r.targets.length ? inr(r.targets[0]) : r.state === "WATCH" ? "—" : "trail"}</td>
                       <td className="num text-right">{r.risk_reward ? num(r.risk_reward, 1) : "—"}</td>
                       <td className="num text-right">{r.position_size?.qty ?? "—"}</td>
+                      <td className={clsx("num text-right", r.blocked ? "text-slate-500" : "text-slate-100 font-semibold")}>{r.final_score != null ? num(r.final_score, 1) : "—"}</td>
                       <td><ScoreBar score={r.score} /></td>
+                      <td className={clsx("num", r.confluence?.conflict && "text-amber-300")} title={r.confluence ? `${r.confluence.strategies.join(", ")}${r.confluence.conflict ? " — direction conflict" : ""}` : ""}>{r.confluence ? `${r.confluence.count}${r.confluence.conflict ? "!" : ""}` : "—"}</td>
+                      <td title={r.gates ? Object.values(r.gates).filter((g) => g.applies).map((g) => `${g.passed ? "PASS" : "FAIL"} ${g.name}: ${g.detail}`).join("\n") : ""}>
+                        {r.blocked_by?.length ? <span className="text-amber-300">✕ {r.blocked_by.length}</span> : r.blocked ? <span className="text-slate-500">{r.action}</span> : <span className="text-up">✓</span>}</td>
                       <td>{r.risk_level}</td>
                       <td>{r.liquidity.rating}</td>
                     </tr>
@@ -134,7 +150,7 @@ export default function Scanner() {
           {selected && (
             <Panel title="Drill-down" right={<span className="flex gap-2">
               {selected.signal_id && <Link className="text-sky-300 hover:underline" to={`/signals/${selected.signal_id}`}>Full detail →</Link>}
-              <Link className="text-sky-300 hover:underline" to={`/charts/${selected.exchange}/${encodeURIComponent(selected.symbol)}?tf=${selected.timeframe}&strategy=${selected.strategy}`}>Chart →</Link>
+              <Link className="text-sky-300 hover:underline" to={`/charts/${selected.exchange}/${encodeURIComponent(selected.symbol)}?tf=${selected.timeframe}&strategy=${selected.strategy}${selected.signal_id ? `&signal=${selected.signal_id}` : ""}`}>Chart →</Link>
               <button className="text-slate-400 hover:text-slate-200" onClick={() => setSelected(null)}>✕</button></span>}
               bodyClass="overflow-auto max-h-[70vh]">
               <RecommendationDetail rec={selected} compact />

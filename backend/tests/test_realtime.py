@@ -220,6 +220,16 @@ def test_liquidity_slippage_tiers_and_impact():
     assert liquidity_slippage_bps(100, 1e5) == pytest.approx(7.0)
 
 
+def test_backtest_slippage_uses_daily_traded_value_for_intraday_bars():
+    from app.backtest.service import slippage_fn_for
+
+    # 75 five-minute bars/day x 2 days; each bar trades Rs 2 cr -> Rs 150 cr/day -> 5 bps tier (not the 40 bps tier)
+    idx = pd.date_range("2026-10-15 09:15", periods=75, freq="5min", tz=IST).append(
+        pd.date_range("2026-10-16 09:15", periods=75, freq="5min", tz=IST))
+    df = pd.DataFrame({"open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0, "volume": 2e5}, index=idx)
+    assert slippage_fn_for({("NSE", "X"): df})("X", "NSE") == 5
+
+
 def test_fo_costs():
     fut = fo_order_costs("SELL", 1_000_000, "FUT")
     assert fut["brokerage"] == 20.0 and fut["stt"] == pytest.approx(200.0) and fut["stamp_duty"] == 0

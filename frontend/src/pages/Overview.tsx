@@ -4,6 +4,8 @@ import { useQuery } from "@tanstack/react-query";
 import { api, type Regime } from "../lib/api";
 import { crore, inr, istTime, num, pct, tone } from "../lib/format";
 import { DataLabel, Empty, ErrorBox, Loading, NotConnected, Panel, Spark, Stat } from "../components/ui";
+import { LiveChange, LivePrice } from "../components/Live";
+import { useLiveTick } from "../lib/live";
 
 interface Row {
   symbol: string; exchange: string; name: string; sector: string | null; last: number; change_pct: number;
@@ -39,14 +41,21 @@ function MoverTable({ rows, metric }: { rows: Row[]; metric: "change" | "volume"
           <tr key={`${r.exchange}:${r.symbol}`}>
             <td><Link className="text-sky-300 hover:underline" to={`/charts/${r.exchange}/${encodeURIComponent(r.symbol)}`}>{r.symbol}</Link>
               <span className="ml-1 text-[10px] text-slate-500">{r.exchange}</span></td>
-            <td className="num text-right">{inr(r.last)}</td>
-            <td className={clsx("num text-right", tone(r.change_pct))}>{pct(r.change_pct)}</td>
+            <td className="text-right"><LivePrice exchange={r.exchange} symbol={r.symbol} fallback={r.last} /></td>
+            <td className="text-right"><LiveChange exchange={r.exchange} symbol={r.symbol} fallback={r.change_pct} /></td>
             <td className="num text-right">{metric === "volume" ? `${num(r.vol_ratio)}x` : metric === "volatility" ? `${num(r.atr_pct)}%` : <span className={tone(r.change_1w_pct)}>{pct(r.change_1w_pct)}</span>}</td>
           </tr>
         ))}
       </tbody>
     </table>
   );
+}
+
+function IndexChange({ i }: { i: IndexRow }) {
+  const t = useLiveTick(i.exchange, i.symbol);
+  const ch = t?.ch ?? i.change;
+  const chp = t?.chp ?? i.change_pct;
+  return <div className={clsx("num text-xs", tone(ch))}>{ch > 0 ? "+" : ""}{inr(ch)} ({pct(chp)})</div>;
 }
 
 export default function Overview() {
@@ -71,8 +80,8 @@ export default function Overview() {
             <div className="flex items-start justify-between">
               <div>
                 <div className="text-xs text-slate-400">{i.symbol} <span className="text-[10px] text-slate-600">{i.exchange}</span></div>
-                <div className="num text-xl font-semibold text-slate-100">{inr(i.last)}</div>
-                <div className={clsx("num text-xs", tone(i.change))}>{i.change > 0 ? "+" : ""}{inr(i.change)} ({pct(i.change_pct)})</div>
+                <div className="text-xl font-semibold text-slate-100"><LivePrice exchange={i.exchange} symbol={i.symbol} fallback={i.last} /></div>
+                <IndexChange i={i} />
               </div>
               <Spark values={i.spark} />
             </div>
@@ -117,8 +126,8 @@ export default function Overview() {
           <table className="tbl mt-1">
             <tbody>
               {d.indices.filter((i) => !i.headline).map((i) => (
-                <tr key={i.symbol}><td>{i.symbol}</td><td className="num text-right">{inr(i.last)}</td>
-                  <td className={clsx("num text-right", tone(i.change_pct))}>{pct(i.change_pct)}</td>
+                <tr key={i.symbol}><td>{i.symbol}</td><td className="text-right"><LivePrice exchange={i.exchange} symbol={i.symbol} fallback={i.last} /></td>
+                  <td className="text-right"><LiveChange exchange={i.exchange} symbol={i.symbol} fallback={i.change_pct} /></td>
                   <td className={clsx("num text-right", tone(i.change_1m_pct))}>{pct(i.change_1m_pct)} 1M</td></tr>
               ))}
             </tbody>

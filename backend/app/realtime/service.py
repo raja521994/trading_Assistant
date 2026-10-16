@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 PUSH_INTERVAL = 0.25
 
 
-@dataclass
+@dataclass(eq=False)  # identity hash: clients live in a set
 class Client:
     ws: WebSocket
     charts: set[tuple[str, str, str]] = field(default_factory=set)  # (exchange, symbol, tf)

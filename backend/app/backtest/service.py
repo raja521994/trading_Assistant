@@ -24,8 +24,11 @@ from .walkforward import walk_forward
 
 log = logging.getLogger(__name__)
 IST = "Asia/Kolkata"
+# Bump when the execution model, cost or slippage model changes so stored OOS evidence is recomputed.
+ENGINE_VERSION = "2026-10-16.trigger-fsm.daily-turnover"
 ENGINE_ASSUMPTIONS = [
-    "Signals evaluated on bar close; fills at next bar open with adverse slippage.",
+    "Signals evaluated on bar close; a later closed bar must cross the entry trigger, then the entry fills at the "
+    "following bar's open with adverse slippage. Untriggered setups expire after the strategy's expiry_bars.",
     "Stop fills at stop (or at the open on a gap through it); stop assumed before target within the same bar.",
     "Shared capital pool, fixed-fractional risk sizing on current equity, no leverage, max open positions cap.",
     "Round-trip transaction costs from config/charges.yaml (Zerodha-style estimates, see as_of) deducted per trade.",
@@ -75,7 +78,9 @@ def slippage_fn_for(data: dict[tuple[str, str], pd.DataFrame]):  # noqa: ANN201
 
     turnover = {}
     for (ex, sym), df in data.items():
-        tv = (df["close"] * df["volume"]).tail(250)
+        # Daily traded value (sum per session) - intraday bars must not be treated as days.
+        value = df["close"] * df["volume"]
+        tv = value.groupby(df.index.date).sum().tail(250)
         turnover[(ex, sym)] = float(tv.median()) / 1e7 if len(tv) and tv.median() > 0 else None
     return lambda sym, ex: liquidity_slippage_bps(turnover.get((ex, sym)))
 
@@ -174,6 +179,7 @@ def compute_evidence(session: Session, strategy_ids: list[str] | None = None) ->
             "error": wf.get("error"), "computed_at": int(time.time()), "method": wf.get("method"),
             "regime_split": regime_split,
             "mfe_r_quantiles": _mfe_quantiles(wf.get("oos_trades", [])),
+            "engine_version": ENGINE_VERSION,
         }
         result = {"oos_equity": _curve(wf.get("oos_equity", pd.Series(dtype=float))),
                   "oos_trades": [t.to_dict() for t in wf.get("oos_trades", [])][-1000:]}
@@ -237,8 +243,8 @@ def evidence_is_current(session: Session) -> bool:
     if set(ev) != set(all_strategy_ids()):
         return False
     for sid, s in ev.items():
-        if "regime_split" not in s or "mfe_r_quantiles" not in s:
-            return False  # computed by an older version
+        if s.get("engine_version") != ENGINE_VERSION:
+            return False  # computed by an older engine / cost model
         data = load_universe(session, get_strategy(sid).meta.timeframe)
         if not data:
             continue

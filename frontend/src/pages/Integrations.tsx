@@ -109,6 +109,45 @@ function ProviderSelector({ providers, active }: { providers: Provider[]; active
   );
 }
 
+interface RealtimeHealthResp {
+  feed: { source: string | null; state: string; connected_since?: string | null; last_reconnect?: string | null; reconnects?: number; last_error?: string | null; subscribed?: Record<string, number>; subscribed_total?: number };
+  mode: string; market_open: boolean; clients: number; instruments_with_ticks: number; registered: number;
+  last_tick_age_s: number | null; stale_threshold_s: number; stale_symbols: string[];
+  ticks_per_sec: number; exchange_to_server_p50_s: number | null; exchange_to_server_p95_s: number | null;
+  tick_to_screen_p50_s: number | null; tick_to_screen_p95_s: number | null; latency_note: string;
+  historical_api: { calls_total: Record<string, number>; historical_last_60s: number; quote_last_60s: number; limits: string } | null;
+}
+
+function RealtimeHealth() {
+  const q = useQuery({ queryKey: ["realtime-health"], queryFn: () => api.get<RealtimeHealthResp>("/realtime/health"), refetchInterval: 3_000 });
+  const h = q.data;
+  if (!h) return null;
+  const ok = h.feed.state === "connected" || h.feed.state === "replaying";
+  const s = (v: number | null) => (v == null ? "—" : `${num(v, 2)} s`);
+  return (
+    <Panel title="Real-time feed health (WebSocket)" right={<span className={clsx("font-semibold", ok ? "text-up" : "text-amber-300")}>{h.feed.source ?? "off"} · {h.feed.state}</span>}>
+      <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3 text-xs">
+        <div><div className="label">Ticks / s</div><div className="num text-slate-100">{num(h.ticks_per_sec, 1)}</div></div>
+        <div><div className="label">Exchange→server p50 / p95</div><div className="num text-slate-100">{s(h.exchange_to_server_p50_s)} / {s(h.exchange_to_server_p95_s)}</div></div>
+        <div><div className="label">Tick→screen p50 / p95</div><div className="num text-slate-100">{s(h.tick_to_screen_p50_s)} / {s(h.tick_to_screen_p95_s)}</div></div>
+        <div><div className="label">Last tick</div><div className="num text-slate-100">{h.last_tick_age_s == null ? "—" : `${num(h.last_tick_age_s, 1)} s ago`}</div></div>
+        <div><div className="label">Subscribed</div><div className="num text-slate-100">{h.feed.subscribed_total ?? 0} <span className="text-slate-500">({Object.entries(h.feed.subscribed ?? {}).map(([k, v]) => `${k} ${v}`).join(", ")})</span></div></div>
+        <div><div className="label">With ticks / registered</div><div className="num text-slate-100">{h.instruments_with_ticks} / {h.registered}</div></div>
+        <div><div className="label">Reconnects</div><div className="num text-slate-100">{h.feed.reconnects ?? 0}</div></div>
+        <div><div className="label">Browser clients</div><div className="num text-slate-100">{h.clients}</div></div>
+      </div>
+      <div className="mt-2 space-y-0.5 text-[11px] text-slate-400">
+        <div>{h.mode}{h.feed.connected_since ? ` · connected since ${h.feed.connected_since}` : ""}{h.feed.last_reconnect ? ` · last reconnect ${h.feed.last_reconnect}` : ""}</div>
+        {h.feed.last_error && <div className="text-amber-300">Last error: {h.feed.last_error}</div>}
+        {h.market_open && h.stale_symbols.length > 0 && <div className="text-red-300">STALE (&gt; {h.stale_threshold_s} s without a tick): {h.stale_symbols.join(", ")}</div>}
+        {!h.market_open && <div>Market closed — no ticks expected; prices show the last traded / official close.</div>}
+        {h.historical_api && <div>Historical REST API: {h.historical_api.historical_last_60s} candle calls and {h.historical_api.quote_last_60s} quote calls in the last 60 s · totals {Object.entries(h.historical_api.calls_total).map(([k, v]) => `${k} ${v}`).join(", ") || "0"} · {h.historical_api.limits}</div>}
+        <div className="text-slate-500">{h.latency_note}</div>
+      </div>
+    </Panel>
+  );
+}
+
 export default function IntegrationsPage() {
   const q = useQuery({ queryKey: ["integrations"], queryFn: () => api.get<Integrations>("/integrations"), refetchInterval: 30_000 });
   if (q.isLoading) return <Loading />;
@@ -121,6 +160,7 @@ export default function IntegrationsPage() {
       {d.fallback_note && <div className="rounded border border-amber-700 bg-amber-950/30 p-2 text-xs text-amber-200">{d.fallback_note}</div>}
       <ProviderSelector providers={d.providers.filter((p) => SHOWN_PROVIDERS.includes(p.name))} active={d.active_provider} />
       <ZerodhaConnect />
+      <RealtimeHealth />
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
         {d.providers.filter((p) => SHOWN_PROVIDERS.includes(p.name)).map((p) => (
           <Panel key={p.name} title={p.display_name} right={<span className="flex items-center gap-2">{p.active && <Pill className="text-sky-300">ACTIVE</Pill>}<DataLabel label={p.health.status} /></span>}>

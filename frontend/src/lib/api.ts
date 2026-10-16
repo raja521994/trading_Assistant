@@ -52,7 +52,7 @@ export function qs(params: Record<string, string | number | undefined | null | b
 
 // ---------- Types (subset of backend payloads used by the UI) ----------
 export type Action = "BUY" | "SELL" | "WAIT" | "NO TRADE";
-export type SignalState = "WATCH" | "SETUP" | "TRIGGERED" | "INVALIDATED" | "EXITED" | "EXPIRED";
+export type SignalState = "WATCH" | "SETUP" | "TRIGGERED" | "ACTIVE" | "INVALIDATED" | "EXITED" | "EXPIRED";
 
 export interface Meta {
   app: string;
@@ -137,6 +137,14 @@ export interface Recommendation {
   expires_at: string;
   data_quality: DataQuality;
   gates?: Record<string, { name: string; applies: boolean; passed: boolean; detail: string }>;
+  final_score?: number;
+  regime_multiplier?: number;
+  gate_multiplier?: number;
+  blocked?: boolean;
+  blocked_by?: string[];
+  confluence?: { count: number; strategies: string[]; all_strategies: string[]; conflict: boolean };
+  stop_info?: { stop_pct: number; cap_pct: number; atr14: number | null; atr_multiple: number | null; within_cap: boolean; rule: string } | null;
+  target_info?: { method: string; p50_r?: number; p75_r?: number | null; n_trades?: number } | null;
 }
 
 export interface DataQuality {

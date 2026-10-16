@@ -71,6 +71,20 @@ def test_scanner_filters(client):
     assert all(x["action"] == "WAIT" for x in r2["recommendations"])
 
 
+def test_live_websocket_snapshot_and_chart_subscription(client):
+    with client.websocket_connect("/api/ws") as ws:
+        snap = ws.receive_json()
+        assert snap["type"] == "snapshot" and "status" in snap and isinstance(snap["data"], list)
+        ws.send_json({"op": "chart", "exchange": "NSE", "symbol": "RELIANCE", "tf": "5m"})
+        while True:
+            m = ws.receive_json()
+            if m["type"] == "bars":
+                assert m["s"] == "RELIANCE" and m["tf"] == "5m"
+                break
+    h = client.get("/api/realtime/health").json()
+    assert "feed" in h and "ticks_per_sec" in h
+
+
 def test_chart_and_integrations(client):
     c = client.get("/api/chart/NSE/RELIANCE", params={"strategy": "donchian_breakout", "bars": 300}).json()
     assert len(c["candles"]) == 300 and c["indicators"]["ema20"] and c["quality"]["ok"]

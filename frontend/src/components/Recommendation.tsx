@@ -5,6 +5,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type Recommendation } from "../lib/api";
 import { crore, inr, istTime, newIdempotencyKey, num, pct, titleCase } from "../lib/format";
 import { ActionBadge, BulletList, DataLabel, KV, Pill, ScoreBar, Section, StateBadge } from "./ui";
+import { LivePrice } from "./Live";
 
 export function ScoreBreakdown({ rec }: { rec: Recommendation }) {
   const sb = rec.score_breakdown;
@@ -41,9 +42,9 @@ export function PaperTradeBox({ rec }: { rec: Recommendation }) {
       qc.invalidateQueries({ queryKey: ["performance"] });
     },
   });
-  const eligible = (rec.action === "BUY" || rec.action === "SELL") && (rec.state === "SETUP" || rec.state === "TRIGGERED") && rec.signal_id;
+  const eligible = (rec.action === "BUY" || rec.action === "SELL") && ["SETUP", "TRIGGERED", "ACTIVE"].includes(rec.state) && rec.signal_id;
   if (!eligible) {
-    return <div className="text-xs text-slate-500">Paper trading is available only for SETUP/TRIGGERED signals with a BUY or SELL action. This signal is {rec.state} / {rec.action}.</div>;
+    return <div className="text-xs text-slate-500">Paper trading is available only for SETUP/TRIGGERED/ACTIVE signals with a BUY or SELL action. This signal is {rec.state} / {rec.action}.</div>;
   }
   const ps = rec.position_size;
   const err = m.error instanceof ApiError ? m.error : null;
@@ -113,11 +114,19 @@ export function RecommendationDetail({ rec, compact = false }: { rec: Recommenda
 
       <div className={clsx("grid gap-3", compact ? "grid-cols-1" : "grid-cols-1 lg:grid-cols-3")}>
         <Section title="Trade plan">
-          <KV k="Reference price" v={inr(rec.reference_price)} />
+          <KV k="Reference price" v={<LivePrice exchange={rec.exchange} symbol={rec.symbol} fallback={rec.reference_price} />} />
+          {rec.entry.trigger != null && <KV k="Entry trigger" v={<span title="A CLOSED bar must cross this level; the entry fills at the next bar's open">{inr(rec.entry.trigger)}</span>} />}
+          {rec.entry.filled != null && <KV k="Filled (next open)" v={inr(rec.entry.filled)} />}
           <KV k="Entry reference" v={inr(rec.entry.reference)} />
           <KV k="Entry zone" v={rec.entry.zone ? `${inr(rec.entry.zone[0])} – ${inr(rec.entry.zone[1])}` : "—"} />
           <KV k="Stop-loss" v={<span className="text-down">{inr(rec.stop_loss)}</span>} />
+          {rec.stop_info && (
+            <KV k="Stop distance" v={<span className={rec.stop_info.within_cap ? "" : "text-amber-300"} title={rec.stop_info.rule}>
+              {num(rec.stop_info.stop_pct)}%{rec.stop_info.atr_multiple != null ? ` · ${num(rec.stop_info.atr_multiple, 1)}×ATR` : ""} · cap {num(rec.stop_info.cap_pct, 1)}%{rec.stop_info.within_cap ? "" : " — EXCEEDS CAP"}
+            </span>} />
+          )}
           <KV k="Target(s)" v={rec.targets.length ? rec.targets.map((t) => inr(t)).join(", ") : rec.target_note ?? "—"} />
+          {rec.target_info && <div className="text-[10px] text-slate-500">Targets: {rec.target_info.method}{rec.target_info.p50_r != null ? ` (p50 ${num(rec.target_info.p50_r)}R, p75 ${num(rec.target_info.p75_r ?? null)}R, n=${rec.target_info.n_trades})` : ""}</div>}
           <KV k="Risk : reward" v={rec.risk_reward ? `1 : ${num(rec.risk_reward)}` : "n/a (trailing exit)"} />
           <KV k="Holding period" v={rec.holding_period} mono={false} />
           <KV k="Risk level" v={rec.risk_level} />
@@ -150,6 +159,16 @@ export function RecommendationDetail({ rec, compact = false }: { rec: Recommenda
           <KV k="Freshness" v={`${rec.freshness.status} · ${rec.freshness.quality}`} />
           <KV k="Expires" v={istTime(rec.expires_at)} />
           <KV k="Composite score" v={<ScoreBar score={rec.score} />} />
+          {rec.final_score != null && (
+            <KV k="Final score" v={<span title={`composite × regime ${num(rec.regime_multiplier ?? null)} × gates ${num(rec.gate_multiplier ?? null)}`}>
+              {num(rec.final_score, 1)}{rec.blocked ? <span className="ml-1 text-amber-300">(watch only{rec.blocked_by?.length ? `: ${rec.blocked_by.join(", ")}` : ""})</span> : null}
+            </span>} />
+          )}
+          {rec.confluence && (
+            <KV k="Confluence" v={<span className={rec.confluence.conflict ? "text-amber-300" : ""} title={rec.confluence.all_strategies.join(", ")}>
+              {rec.confluence.count} strateg{rec.confluence.count === 1 ? "y" : "ies"} agree{rec.confluence.conflict ? " · DIRECTION CONFLICT" : ""}
+            </span>} />
+          )}
           <KV k="Regime" v={rec.regime ?? "—"} mono={false} />
         </Section>
       </div>
