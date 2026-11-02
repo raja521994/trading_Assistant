@@ -148,13 +148,24 @@ if (-not $uv -or -not $npm) {
 
 New-Item -ItemType Directory -Force $LogDir, $RunDir | Out-Null
 
+function Invoke-Native([string]$Dir, [string]$Exe, [string[]]$ArgList) {
+    # Native tools (uv, npm) print progress on stderr; Windows PowerShell 5.1 would treat that as a terminating
+    # error under ErrorActionPreference=Stop, so judge success by the exit code instead.
+    Push-Location $Dir
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { & $Exe @ArgList 2>&1 | ForEach-Object { "$_" } | Write-Host; $code = $LASTEXITCODE }
+    finally { $ErrorActionPreference = $old; Pop-Location }
+    if ($code -ne 0) { throw "'$Exe $($ArgList -join ' ')' failed with exit code $code" }
+}
+
 if (-not (Test-Path (Join-Path $Backend ".venv"))) {
     Write-Host "Installing backend dependencies (first run)..." -ForegroundColor Cyan
-    Push-Location $Backend; try { & $uv sync } finally { Pop-Location }
+    Invoke-Native $Backend $uv @("sync")
 }
 if (-not (Test-Path (Join-Path $Frontend "node_modules"))) {
     Write-Host "Installing frontend dependencies (first run)..." -ForegroundColor Cyan
-    Push-Location $Frontend; try { & $npm install --no-audit --no-fund } finally { Pop-Location }
+    Invoke-Native $Frontend $npm @("install", "--no-audit", "--no-fund")
 }
 
 $backendPid = $null
