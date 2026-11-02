@@ -122,16 +122,28 @@ strictly **read-only** — it cannot place or modify orders. After connecting, t
 bars and the last 30 days of 5-minute bars for the universe (about a minute), then polls real-time LTP quotes every
 few seconds and new 5-minute bars every minute. Exchange holidays come from the Upstox holiday API.
 
-## Start everything with one command (Windows)
+## Start everything with one command (Windows) - runs in the background
 
 ```powershell
 .\start.ps1            # or double-click start.bat
 ```
 
 It installs dependencies on first run, starts the backend (http://127.0.0.1:8000) and the dashboard
-(http://127.0.0.1:5173), waits until both respond and opens the browser. Press **Ctrl+C** to stop both.
-Options: `.\start.ps1 -NoBrowser`, `.\start.ps1 -Stop` (stops servers on ports 8000/5173, e.g. after closing the window).
-Logs: `backend\var\logs\`. Then log in with Zerodha in **Data & Integrations** (once per trading day).
+(http://127.0.0.1:5173) as **background processes**, waits until both respond, opens the browser and exits.
+**You can close the window - the app keeps running** until you stop it or restart Windows.
+
+| Command | Double-click | What it does |
+|---|---|---|
+| `.\start.ps1` | `start.bat` | Start in the background (add `-NoBrowser` to skip opening the browser) |
+| `.\start.ps1 -Status` | `status.bat` | Show whether the servers are running |
+| `.\start.ps1 -Restart` | | Stop and start again (e.g. after updating the code) |
+| `.\start.ps1 -Stop` | `stop.bat` | Stop both servers |
+| `.\start.ps1 -InstallAutoStart` | | Also start automatically (hidden) every time you log in to Windows |
+| `.\start.ps1 -RemoveAutoStart` | | Remove the automatic start |
+
+Logs: `backend\var\logs\backend.log` and `frontend.log` (rotated at 20 MB); process ids in `backend\var\run\`.
+Then log in with Zerodha in **Data & Integrations** (once per trading day - the token expires ~06:00 IST; until you
+log in the app shows clearly labelled SIMULATED data).
 
 ## Quick start (Windows / macOS / Linux)
 

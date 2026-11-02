@@ -1,22 +1,33 @@
 <#
 .SYNOPSIS
-  Start the AI Trading Dashboard (FastAPI backend + Vite frontend) with one command.
+  Start / stop the AI Trading Dashboard (FastAPI backend + Vite frontend) as background processes.
 
 .DESCRIPTION
+  The servers run detached from this window: you can close the window (or log out of the terminal) and the app keeps
+  running at http://127.0.0.1:5173 until you stop it with `.\start.ps1 -Stop` (or `stop.bat`), or restart Windows.
+  Processes are created through WMI (Win32_Process.Create), so they do not belong to this console or to the
+  terminal's job object and are not killed when the window closes.
+
   - Installs dependencies on first run (uv sync / npm install).
-  - Starts the backend on http://127.0.0.1:8000 and the dashboard on http://127.0.0.1:5173.
-  - Waits until both respond, opens the dashboard in your browser, and keeps running.
-  - Press Ctrl+C (or close the window) to stop both servers.
-  Logs: backend\var\logs\backend.log and frontend.log
+  - Waits until both servers respond, opens the dashboard in the browser, then exits.
+  Logs: backend\var\logs\backend.log and frontend.log (appended; rotated when larger than 20 MB).
 
 .EXAMPLE
-  .\start.ps1              # start everything
-  .\start.ps1 -NoBrowser   # don't open the browser
-  .\start.ps1 -Stop        # stop servers started earlier (anything listening on ports 8000 / 5173)
+  .\start.ps1                    # start in the background (default) and open the browser
+  .\start.ps1 -NoBrowser         # start without opening the browser
+  .\start.ps1 -Status            # show whether the servers are running
+  .\start.ps1 -Restart           # stop, then start again (e.g. after pulling new code)
+  .\start.ps1 -Stop              # stop both servers
+  .\start.ps1 -InstallAutoStart  # also start automatically when you log in to Windows
+  .\start.ps1 -RemoveAutoStart   # remove the automatic start
 #>
 param(
     [switch]$NoBrowser,
-    [switch]$Stop
+    [switch]$Stop,
+    [switch]$Status,
+    [switch]$Restart,
+    [switch]$InstallAutoStart,
+    [switch]$RemoveAutoStart
 )
 
 $ErrorActionPreference = "Stop"
@@ -24,8 +35,10 @@ $Root = $PSScriptRoot
 $Backend = Join-Path $Root "backend"
 $Frontend = Join-Path $Root "frontend"
 $LogDir = Join-Path $Backend "var\logs"
+$RunDir = Join-Path $Backend "var\run"
 $ApiUrl = "http://127.0.0.1:8000/api/health"
 $WebUrl = "http://127.0.0.1:5173"
+$TaskName = "AI Trading Dashboard"
 
 function Get-ListenerPid([int]$Port) {
     $c = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -33,27 +46,68 @@ function Get-ListenerPid([int]$Port) {
 }
 
 function Stop-Tree([int]$ProcessId) {
-    # Stops the process and its children (uv -> python, npm -> node). Ignores already-exited processes.
+    # Stops the process and its children (cmd -> uv -> python, cmd -> npm -> node). Ignores exited processes.
     & cmd.exe /c "taskkill /T /F /PID $ProcessId >nul 2>&1"
 }
 
+function Test-Url([string]$Url) {
+    try { return (Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 3).StatusCode -eq 200 } catch { return $false }
+}
+
 function Stop-Servers {
-    foreach ($port in 8000, 5173) {
+    foreach ($name in "backend", "frontend") {
+        $pidFile = Join-Path $RunDir "$name.pid"
+        if (Test-Path $pidFile) {
+            $procId = [int](Get-Content $pidFile -Raw)
+            if (Get-Process -Id $procId -ErrorAction SilentlyContinue) { Stop-Tree $procId }
+            Remove-Item $pidFile -Force
+        }
+    }
+    foreach ($port in 8000, 5173) {  # anything still listening (e.g. started by an older version of this script)
         $procId = Get-ListenerPid $port
-        if ($procId) { Stop-Tree $procId; Write-Host "Stopped server on port $port (pid $procId)" }
-        else { Write-Host "Nothing running on port $port" }
+        if ($procId) { Stop-Tree $procId }
+    }
+    Start-Sleep -Milliseconds 800
+    foreach ($port in 8000, 5173) {
+        if (Get-ListenerPid $port) { Write-Host "Port $port is still in use." -ForegroundColor Yellow }
+        else { Write-Host "Stopped server on port $port" }
     }
 }
 
-function Wait-Url([string]$Url, [int]$TimeoutSec, [System.Diagnostics.Process]$Proc, [string]$Log) {
+function Show-Status {
+    $api = Test-Url $ApiUrl
+    $web = Test-Url $WebUrl
+    Write-Host ("Backend  (port 8000): " + $(if ($api) { "RUNNING" } elseif (Get-ListenerPid 8000) { "STARTING / NOT RESPONDING" } else { "STOPPED" }))
+    Write-Host ("Dashboard (port 5173): " + $(if ($web) { "RUNNING  -> $WebUrl" } elseif (Get-ListenerPid 5173) { "STARTING / NOT RESPONDING" } else { "STOPPED" }))
+    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    Write-Host ("Auto-start at logon: " + $(if ($task) { "ON" } else { "off" }))
+    Write-Host "Logs: $LogDir"
+}
+
+function Rotate-Log([string]$Path) {
+    if ((Test-Path $Path) -and (Get-Item $Path).Length -gt 20MB) { Move-Item $Path "$Path.1" -Force }
+}
+
+function Start-Detached([string]$Name, [string]$Exe, [string]$Arguments, [string]$WorkDir) {
+    # cmd.exe wrapper only to append stdout/stderr to the log file; hidden window; created by WMI so it is fully
+    # independent of this console (closing the window does not stop it).
+    $log = Join-Path $LogDir "$Name.log"
+    Rotate-Log $log
+    $cmdLine = "cmd.exe /d /c `"`"$Exe`" $Arguments >> `"$log`" 2>&1`""
+    $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }
+    $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+        CommandLine = $cmdLine; CurrentDirectory = $WorkDir; ProcessStartupInformation = $startup }
+    if ($r.ReturnValue -ne 0) { throw "Could not start $Name (Win32_Process.Create returned $($r.ReturnValue))" }
+    Set-Content -Path (Join-Path $RunDir "$Name.pid") -Value $r.ProcessId -NoNewline
+    return [int]$r.ProcessId
+}
+
+function Wait-Url([string]$Url, [int]$TimeoutSec, [int]$RootPid, [string]$Log) {
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
-        try {
-            $r = Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 3
-            if ($r.StatusCode -eq 200) { return $true }
-        } catch { }
-        if ($Proc -and $Proc.HasExited) {
-            Write-Host "Process exited early. Last log lines ($Log):" -ForegroundColor Red
+        if (Test-Url $Url) { return $true }
+        if ($RootPid -and -not (Get-Process -Id $RootPid -ErrorAction SilentlyContinue)) {
+            Write-Host "The process exited early. Last log lines ($Log):" -ForegroundColor Red
             if (Test-Path $Log) { Get-Content $Log -Tail 20 }
             return $false
         }
@@ -62,79 +116,76 @@ function Wait-Url([string]$Url, [int]$TimeoutSec, [System.Diagnostics.Process]$P
     return $false
 }
 
+# ------------------------------------------------------------------ commands
 if ($Stop) { Stop-Servers; exit 0 }
+if ($Status) { Show-Status; exit 0 }
+if ($RemoveAutoStart) {
+    if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+        Write-Host "Auto-start at logon removed."
+    } else { Write-Host "Auto-start at logon was not installed." }
+    exit 0
+}
+if ($InstallAutoStart) {
+    $action = New-ScheduledTaskAction -Execute "powershell.exe" `
+        -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$PSCommandPath`" -NoBrowser"
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings `
+        -Description "Starts the AI Trading Dashboard servers in the background at logon" -Force | Out-Null
+    Write-Host "Auto-start installed: the dashboard will start in the background each time you log in to Windows." -ForegroundColor Green
+    Write-Host "(Remove with .\start.ps1 -RemoveAutoStart.) Starting it now..."
+}
+if ($Restart) { Stop-Servers }
 
-foreach ($tool in "uv", "npm") {
-    if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
-        Write-Host "'$tool' was not found on PATH. Install it first (see README.md)." -ForegroundColor Red
-        exit 1
-    }
+$uv = (Get-Command uv -ErrorAction SilentlyContinue).Source
+$npm = (Get-Command npm.cmd -ErrorAction SilentlyContinue).Source
+if (-not $uv -or -not $npm) {
+    Write-Host "'uv' and 'npm' must be on PATH. Install them first (see README.md)." -ForegroundColor Red
+    exit 1
 }
 
-New-Item -ItemType Directory -Force $LogDir | Out-Null
+New-Item -ItemType Directory -Force $LogDir, $RunDir | Out-Null
 
 if (-not (Test-Path (Join-Path $Backend ".venv"))) {
     Write-Host "Installing backend dependencies (first run)..." -ForegroundColor Cyan
-    Push-Location $Backend; try { uv sync } finally { Pop-Location }
+    Push-Location $Backend; try { & $uv sync } finally { Pop-Location }
 }
 if (-not (Test-Path (Join-Path $Frontend "node_modules"))) {
     Write-Host "Installing frontend dependencies (first run)..." -ForegroundColor Cyan
-    Push-Location $Frontend; try { npm install --no-audit --no-fund } finally { Pop-Location }
+    Push-Location $Frontend; try { & $npm install --no-audit --no-fund } finally { Pop-Location }
 }
 
-$started = @()
-$backendProc = $null
-$frontendProc = $null
-
+$backendPid = $null
+$frontendPid = $null
 if (Get-ListenerPid 8000) {
-    Write-Host "Backend already running on port 8000 - reusing it." -ForegroundColor Yellow
+    Write-Host "Backend already running on port 8000." -ForegroundColor Yellow
 } else {
-    Write-Host "Starting backend  -> http://127.0.0.1:8000" -ForegroundColor Cyan
-    $backendProc = Start-Process -FilePath "uv" -WorkingDirectory $Backend -WindowStyle Hidden -PassThru `
-        -ArgumentList "run", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000" `
-        -RedirectStandardOutput (Join-Path $LogDir "backend.log") -RedirectStandardError (Join-Path $LogDir "backend.err.log")
-    $started += $backendProc
+    Write-Host "Starting backend   -> http://127.0.0.1:8000 (background)" -ForegroundColor Cyan
+    $backendPid = Start-Detached "backend" $uv "run uvicorn app.main:app --host 127.0.0.1 --port 8000" $Backend
 }
-
 if (Get-ListenerPid 5173) {
-    Write-Host "Frontend already running on port 5173 - reusing it." -ForegroundColor Yellow
+    Write-Host "Dashboard already running on port 5173." -ForegroundColor Yellow
 } else {
-    Write-Host "Starting dashboard -> $WebUrl" -ForegroundColor Cyan
-    $frontendProc = Start-Process -FilePath "npm.cmd" -WorkingDirectory $Frontend -WindowStyle Hidden -PassThru `
-        -ArgumentList "run", "dev" `
-        -RedirectStandardOutput (Join-Path $LogDir "frontend.log") -RedirectStandardError (Join-Path $LogDir "frontend.err.log")
-    $started += $frontendProc
+    Write-Host "Starting dashboard -> $WebUrl (background)" -ForegroundColor Cyan
+    $frontendPid = Start-Detached "frontend" $npm "run dev" $Frontend
 }
 
-try {
-    if (-not (Wait-Url $ApiUrl 90 $backendProc (Join-Path $LogDir "backend.err.log"))) {
-        throw "Backend did not start. See $LogDir\backend.err.log"
-    }
-    Write-Host "Backend ready." -ForegroundColor Green
-    if (-not (Wait-Url $WebUrl 60 $frontendProc (Join-Path $LogDir "frontend.log"))) {
-        throw "Dashboard did not start. See $LogDir\frontend.log"
-    }
-    Write-Host "Dashboard ready: $WebUrl" -ForegroundColor Green
-    Write-Host "Market data loads in the background (first run ~1-2 min). Log in with Zerodha in 'Data & Integrations' once per trading day."
-    if (-not $NoBrowser) { Start-Process $WebUrl }
-
-    if ($started.Count -eq 0) { Write-Host "Both servers were already running; nothing else to do."; exit 0 }
-    Write-Host "Press Ctrl+C to stop the servers. Logs: $LogDir" -ForegroundColor Cyan
-    while ($true) {
-        foreach ($p in $started) {
-            if ($p.HasExited) { throw "A server process exited unexpectedly (pid $($p.Id)). Check logs in $LogDir" }
-        }
-        Start-Sleep -Seconds 2
-    }
+if (-not (Wait-Url $ApiUrl 120 $backendPid (Join-Path $LogDir "backend.log"))) {
+    Write-Host "Backend did not start. See $LogDir\backend.log" -ForegroundColor Red
+    exit 1
 }
-catch {
-    Write-Host $_.Exception.Message -ForegroundColor Red
-    $script:failed = $true
+Write-Host "Backend ready." -ForegroundColor Green
+if (-not (Wait-Url $WebUrl 90 $frontendPid (Join-Path $LogDir "frontend.log"))) {
+    Write-Host "Dashboard did not start. See $LogDir\frontend.log" -ForegroundColor Red
+    exit 1
 }
-finally {
-    foreach ($p in $started) {
-        if (-not $p.HasExited) { Stop-Tree $p.Id }
-    }
-    if ($started.Count -gt 0) { Write-Host "Servers stopped." }
-    if ($script:failed) { exit 1 }
-}
+Write-Host "Dashboard ready: $WebUrl" -ForegroundColor Green
+if (-not $NoBrowser) { Start-Process $WebUrl }
+Write-Host ""
+Write-Host "The app is running in the background - you can close this window." -ForegroundColor Green
+Write-Host "Stop it with:  .\start.ps1 -Stop   (or double-click stop.bat)"
+Write-Host "Status:        .\start.ps1 -Status"
+Write-Host "Market data loads in the background (~1-2 min on first start). Log in with Zerodha in 'Data & Integrations' once per trading day."
+exit 0

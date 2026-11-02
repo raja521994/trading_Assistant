@@ -48,8 +48,12 @@ def run_scan_and_persist(session: Session, now: datetime | None = None) -> dict[
     prov = result["provider"]
     for other in session.scalars(select(Signal).where(Signal.state.in_(ACTIVE), Signal.origin == "live_scan",
                                                       Signal.provider != prov)):
-        if other.state == TRIGGERED:
+        # Each non-terminal state retires through a transition the state machine allows.
+        if other.state == ACTIVE_STATE:
             transition(session, other, EXITED, f"Data provider changed to {prov}; tracking stopped")
+            other.outcome = {"result": "untracked", "reason": "data provider changed"}
+        elif other.state == TRIGGERED:
+            transition(session, other, INVALIDATED, f"Data provider changed to {prov} before the entry filled")
             other.outcome = {"result": "untracked", "reason": "data provider changed"}
         else:
             transition(session, other, EXPIRED, f"Data provider changed to {prov}")

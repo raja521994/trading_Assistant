@@ -176,3 +176,26 @@ def test_assistant_uses_computed_facts(client):
     sym = client.get("/api/scanner").json()["recommendations"][0]["symbol"]
     w = client.post("/api/assistant/ask", json={"question": f"Why is {sym} appearing in the scanner?"}).json()
     assert w["intent"] == "explain_signal" and w["answer"]["calculations"] is not None
+
+
+def test_provider_switch_retires_signals_in_every_state(client):
+    """Signals left over from another data provider (e.g. Kite after the daily token expired) must be retired through
+    allowed transitions - previously an ACTIVE signal made the startup scan crash."""
+    import time
+
+    from app.db import SessionLocal
+    from app.models import Signal
+    from app.signals.engine import run_scan_and_persist
+
+    now = int(time.time())
+    states = ["WATCH", "SETUP", "TRIGGERED", "ACTIVE"]
+    with SessionLocal() as s:
+        for st in states:
+            s.add(Signal(uid=f"kite:test:{st}", provider="kite", origin="live_scan", symbol=f"OLD{st}", exchange="NSE",
+                         mode="swing", strategy="ema_cross", direction="LONG", action="WAIT", state=st, score=50,
+                         generated_at=now, data_ts=now, expires_at=now + 86400, updated_at=now, payload={}, outcome=None))
+        s.commit()
+        run_scan_and_persist(s)
+        s.commit()
+        got = {x.symbol: x.state for x in s.query(Signal).filter(Signal.provider == "kite")}
+    assert got == {"OLDWATCH": "EXPIRED", "OLDSETUP": "EXPIRED", "OLDTRIGGERED": "INVALIDATED", "OLDACTIVE": "EXITED"}
