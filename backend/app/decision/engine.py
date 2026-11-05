@@ -387,7 +387,11 @@ def _construct(session: Session, recs: list[dict[str, Any]], regime: dict[str, A
             gate_fail.append("liquidity below the minimum")
         if not (r0.get("stop_info") or {}).get("within_cap", True):
             gate_fail.append("stop wider than the mode cap")
-        final = score * regime["multiplier"] * (0.0 if gate_fail else 1.0)
+        # The regime budget scales position SIZE (risk_amt below), not the ranking: a half-size trade in a weaker regime
+        # is still ranked on its own evidence. ML multiplier applies only if the model validated out of sample.
+        ml = r0.get("ml") or {}
+        ml_mult = min(1.4, max(0.6, ml["p_win"] / ml["threshold"])) if ml.get("model_useful") and ml.get("threshold") else 1.0
+        final = score * ml_mult * (0.0 if gate_fail else 1.0)
         scored.append({"key": key, "recs": rs, "primary": r0, "score": round(score, 1), "components": comp,
                        "final": round(final, 1), "gate_fail": gate_fail, "families": sorted(fams)})
     scored.sort(key=lambda x: -x["final"])
@@ -442,7 +446,8 @@ def _construct(session: Session, recs: list[dict[str, Any]], regime: dict[str, A
             "capital_used": round(qty * entry, 2), "max_loss": round(qty * per_share, 2),
             "holding_period": r.get("holding_period"), "invalidation": r.get("invalidation"),
             "score": s["score"], "score_breakdown": {k: round(v, 1) for k, v in s["components"].items()},
-            "regime_multiplier": regime["multiplier"], "final_score": s["final"],
+            "regime_multiplier": regime["multiplier"], "risk_budget_pct": regime["exposure_budget_pct"],
+            "final_score": s["final"],
             "evidence": [{"strategy": x["tournament"]["id"], "profit_factor": x["tournament"]["profit_factor"],
                           "pf_ci": x["tournament"]["pf_ci"], "expectancy_ci": x["tournament"]["expectancy_ci"],
                           "oos_trades": x["tournament"]["num_trades"], "regime_pf": x["tournament"]["regime_pf"]}

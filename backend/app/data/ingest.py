@@ -75,6 +75,7 @@ def ingest(session: Session, provider: MarketDataProvider, timeframes: tuple[str
     if ids:
         session.execute(delete(Candle).where(Candle.instrument_id.in_(ids), Candle.timeframe == "5m",
                                              (Candle.ts % 300) != 0))
+    session.commit()  # keep write transactions short: other jobs and API requests share the SQLite file
     expected = {tf: provider.expected_last_bar(tf) for tf in timeframes if tf in caps.timeframes}
     refresh = {tf: provider.needs_refresh(tf) for tf in timeframes if tf in caps.timeframes}
     for (exchange, symbol), inst in instruments.items():
@@ -110,6 +111,7 @@ def ingest(session: Session, provider: MarketDataProvider, timeframes: tuple[str
                                              strict=True)
             ]
             session.execute(insert(Candle), rows)
+            session.commit()
             inserted += len(rows) - (1 if last is not None and min(ts) == last else 0)
             written += len(rows)
             changed.append((inst.id, tf))

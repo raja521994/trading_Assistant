@@ -64,11 +64,20 @@ class Metrics:
         v = sorted(values)
         return round(v[min(len(v) - 1, int(q * (len(v) - 1) + 0.5))], 3)
 
+    @staticmethod
+    def _copy(d: deque) -> list[float]:
+        for _ in range(5):  # the feed appends from another thread; retry if a copy races with an append
+            try:
+                return list(d)
+            except RuntimeError:
+                continue
+        return []
+
     def snapshot(self) -> dict[str, Any]:
         now = time.time()
-        recent = [t for t in self.tick_times if now - t <= 10]
-        lat = list(self.latencies)
-        cl = list(self.client_latencies)
+        recent = [t for t in self._copy(self.tick_times) if now - t <= 10]
+        lat = self._copy(self.latencies)
+        cl = self._copy(self.client_latencies)
         return {"ticks_per_sec": round(len(recent) / 10.0, 1),
                 "exchange_to_server_p50_s": self._pct(lat, 0.5), "exchange_to_server_p95_s": self._pct(lat, 0.95),
                 "tick_to_screen_p50_s": self._pct(cl, 0.5), "tick_to_screen_p95_s": self._pct(cl, 0.95),
