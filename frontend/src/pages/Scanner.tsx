@@ -136,7 +136,7 @@ export default function Scanner() {
                         <StaleBadge exchange={r.exchange} symbol={r.symbol} marketOpen={r.freshness.market_session === "OPEN"} /></td>
                       <td className="num text-right">{r.state === "WATCH" ? "—" : r.entry.filled != null ? <span title="filled at next open">{inr(r.entry.filled)}</span> : inr(r.entry.trigger ?? r.entry.reference)}</td>
                       <td className="num text-right text-down">{inr(r.stop_loss)}</td>
-                      <td className="num text-right text-up">{r.targets.length ? inr(r.targets[0]) : r.state === "WATCH" ? "—" : "trail"}</td>
+                      <td className="num text-right text-up">{r.targets.length ? r.targets.map((t) => inr(t)).join(" / ") : r.state === "WATCH" ? "—" : "trail"}</td>
                       <td className="num text-right">{r.risk_reward ? num(r.risk_reward, 1) : "—"}</td>
                       <td className="num text-right">{r.position_size?.qty ?? "—"}</td>
                       <td className={clsx("num text-right", r.blocked ? "text-slate-500" : "text-slate-100 font-semibold")}>{r.final_score != null ? num(r.final_score, 1) : "—"}</td>
