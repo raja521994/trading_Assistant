@@ -72,9 +72,9 @@ def evidence_job(force: bool = False) -> None:
             current = evidence_is_current(s)
         if force or not current:
             with session_scope() as s:
-                compute_evidence(s)
+                compute_evidence(s, lock=_lock)
             with session_scope() as s:
-                n = replay_recent_signals(s)
+                n = replay_recent_signals(s, lock=_lock)
                 log.info("historical replay recorded %d signals", n)
         with _lock, session_scope() as s:
             r = run_scan_and_persist(s)

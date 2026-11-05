@@ -148,7 +148,10 @@ def _warnings(m: dict[str, Any]) -> list[str]:
     return w
 
 
-def compute_evidence(session: Session, strategy_ids: list[str] | None = None) -> dict[str, Any]:
+def compute_evidence(session: Session, strategy_ids: list[str] | None = None, lock: Any = None) -> dict[str, Any]:
+    import contextlib
+
+    lock = lock or contextlib.nullcontext()
     bench_df = load_benchmark(session)
     bench = bench_df["close"] if bench_df is not None else None
     costs = load_risk_config(session).costs
@@ -183,9 +186,11 @@ def compute_evidence(session: Session, strategy_ids: list[str] | None = None) ->
         }
         result = {"oos_equity": _curve(wf.get("oos_equity", pd.Series(dtype=float))),
                   "oos_trades": [t.to_dict() for t in wf.get("oos_trades", [])][-1000:]}
-        session.add(BacktestRun(created_at=int(time.time()), kind="evidence", strategy=sid,
-                                params={"grid": wf.get("grid")}, summary=summary, result=result))
-        session.flush()
+        session.commit()  # end any read transaction before writing (short write, serialised with other jobs)
+        with lock:
+            session.add(BacktestRun(created_at=int(time.time()), kind="evidence", strategy=sid,
+                                    params={"grid": wf.get("grid")}, summary=summary, result=result))
+            session.commit()
         out[sid] = summary
         log.info("walk-forward evidence %s: %s trades OOS in %.1fs", sid, summary["num_trades"],
                  time.perf_counter() - t0)
@@ -254,10 +259,14 @@ def evidence_is_current(session: Session) -> bool:
     return True
 
 
-def replay_recent_signals(session: Session, sessions: int = 60) -> int:
+def replay_recent_signals(session: Session, sessions: int = 60, lock: Any = None) -> int:
     """Record what each daily strategy would have signalled over the recent past, with outcomes
     (origin='historical_replay'). Clearly separated from live-scan signals in the UI."""
+    import contextlib
+
     from ..signals.state_machine import record_replay_signal
+
+    lock = lock or contextlib.nullcontext()
 
     costs = load_risk_config(session).costs
     created = 0
@@ -272,7 +281,9 @@ def replay_recent_signals(session: Session, sessions: int = 60) -> int:
         dates = sorted({d for df in data.values() for d in df.index if d <= last})
         start = dates[-sessions] if len(dates) > sessions else dates[0]
         res = run_portfolio(strat, data, BTConfig(costs=costs, start=start))
-        for t in res["trades"]:
-            created += record_replay_signal(session, strat, t, active_provider().name)
-    session.flush()
+        session.commit()
+        with lock:
+            for t in res["trades"]:
+                created += record_replay_signal(session, strat, t, active_provider().name)
+            session.commit()
     return created

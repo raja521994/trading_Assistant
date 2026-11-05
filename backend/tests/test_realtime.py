@@ -326,11 +326,18 @@ def test_no_strategy_uses_future_bars():
     daily = next(v for v in generate_daily(11, date(2022, 1, 3), date(2024, 12, 31)).values() if v["volume"].sum())
     sp = SampleProvider(intraday_sessions=6, clock=lambda: datetime(2025, 6, 27, 18, 0, tzinfo=pd.Timestamp.now(IST).tzinfo))
     intra = sp.candles("RELIANCE", "NSE", "5m")
-    for sid in all_strategy_ids():
+    from app.quant.library.catalog import library_ids
+    from app.quant.library.context import set_context
+
+    set_context(daily["close"] * 0 + 10000, {}, {})
+    for sid in all_strategy_ids() + library_ids():
         strat = get_strategy(sid)
+        if hasattr(strat, "run_custom"):
+            continue  # rebalance / pairs strategies: selection is tested via backtest/rebalance (close-of-day data)
         df = intra if strat.intraday else daily
         cut = int(len(df) * 0.7)
-        full, trunc = arrays(strat.prepare(df)), arrays(strat.prepare(df.iloc[:cut]))
+        full = arrays(strat.prepare_keyed(("NSE", "X"), df))
+        trunc = arrays(strat.prepare_keyed(("NSE", "X"), df.iloc[:cut]))
         for i in range(strat.warmup + 1, cut):
             a1, a2 = strat.entry(full, i), strat.entry(trunc, i)
             assert (a1 is None) == (a2 is None), f"{sid}: look-ahead at bar {i}"

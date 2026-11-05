@@ -35,6 +35,8 @@ class PaperOrderRequest(BaseModel):
     qty: int | None = Field(None, ge=1)
     idempotency_key: str = Field(..., min_length=8, max_length=96)
     note: str | None = None
+    # Paper-trade a setup the gates blocked (WAIT / NO TRADE) - for learning; recorded on the trade
+    acknowledge_unvalidated: bool = False
 
 
 class PaperOrderRejected(Exception):
@@ -106,8 +108,9 @@ def place_paper_order(session: Session, req: PaperOrderRequest) -> PaperTrade:
             raise PaperOrderRejected(f"Signal {req.signal_id} not found")
         if sig.state not in ("SETUP", "TRIGGERED", "ACTIVE"):
             raise PaperOrderRejected(f"Signal is {sig.state}; only SETUP, TRIGGERED or ACTIVE signals can be paper traded")
-        if sig.action not in ("BUY", "SELL"):
-            raise PaperOrderRejected(f"Signal action is {sig.action}; paper orders require a BUY or SELL action")
+        if sig.action not in ("BUY", "SELL") and not req.acknowledge_unvalidated:
+            raise PaperOrderRejected(f"Signal action is {sig.action} (not a validated BUY/SELL). Confirm "
+                                     "'paper trade anyway' to simulate it for learning.")
         p = sig.payload
         symbol, exchange, direction, mode = sig.symbol, sig.exchange, sig.direction, sig.mode
         stop = req.stop if req.stop is not None else p.get("stop_loss")
@@ -138,8 +141,16 @@ def place_paper_order(session: Session, req: PaperOrderRequest) -> PaperTrade:
     if qty is None:
         qty = position_size(state.equity, fill, stop, cfg.risk_per_trade_pct, cfg.max_alloc_per_instrument_pct,
                             cash_available=state.cash, lot_size=inst.lot_size, max_leverage=cfg.max_leverage).qty
+        if qty < 1:
+            need_alloc = fill / (cfg.max_alloc_per_instrument_pct / 100.0)
+            need_risk = abs(fill - float(stop)) / (cfg.risk_per_trade_pct / 100.0)
+            raise PaperOrderRejected(
+                f"Position size rounds to 0 shares: 1 share at Rs {fill:,.2f} with stop {float(stop):,.2f} needs "
+                f"account capital of at least Rs {max(need_alloc, need_risk):,.0f} (current equity Rs "
+                f"{state.equity:,.0f}). Raise 'account equity' in Risk & Performance or enter a quantity.")
     proposal = TradeProposal(symbol, exchange, inst.sector, direction, mode, fill, float(stop),
-                             None if target is None else float(target), int(qty), _avg_turnover_cr(session, inst))
+                             None if target is None else float(target), int(qty), _avg_turnover_cr(session, inst),
+                             manual=sig is None)
     decision = check_trade(proposal, state, cfg)
     if not decision.approved:
         audit(session, "paper_order_rejected", {"symbol": symbol, "signal_id": req.signal_id, **decision.to_dict()})
@@ -155,6 +166,8 @@ def place_paper_order(session: Session, req: PaperOrderRequest) -> PaperTrade:
         status="OPEN", entry_costs=round(entry_costs, 2), exit_costs=0.0, last_price=q.last_price,
         details={"quote_at_entry": q.last_price, "quote_status": q.status.value, "slippage_bps": slip_bps,
                  "product": product, "risk_checks": decision.to_dict(), "note": req.note,
+                 "signal_action": sig.action if sig else "MANUAL",
+                 "unvalidated": bool(sig is not None and sig.action not in ("BUY", "SELL")),
                  "exit_time": (sig.payload.get("expires_at") if sig and mode == "intraday" else None)},
     )
     session.add(trade)

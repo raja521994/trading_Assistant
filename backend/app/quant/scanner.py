@@ -204,7 +204,12 @@ def build_recommendation(strat: Strategy, key: tuple[str, str], inst: Any, cand:
         action = "BUY" if long else "SELL"
         if sizing and sizing["qty"] < 1:
             action = "NO TRADE"
-            action_reasons.append(f"Position size rounds to 0 shares under current risk limits ({sizing['limiting_factor']})")
+            need = max(entry_ref / (cfg.max_alloc_per_instrument_pct / 100.0),
+                       abs(entry_ref - setup.stop) / (cfg.risk_per_trade_pct / 100.0)) if setup else 0
+            action_reasons.append(
+                f"Position size rounds to 0 shares: account equity Rs {cfg.account_equity:,.0f} is too small for one "
+                f"share at Rs {entry_ref:,.2f} ({sizing['limiting_factor']}); needs at least Rs {need:,.0f} - change "
+                "'account equity' in Risk & Performance")
         if liq["avg_turnover_cr"] is not None and liq["avg_turnover_cr"] < cfg.min_avg_turnover_cr:
             action = "NO TRADE"
             action_reasons.append(f"Liquidity below minimum (Rs {liq['avg_turnover_cr']} cr < Rs {cfg.min_avg_turnover_cr} cr)")

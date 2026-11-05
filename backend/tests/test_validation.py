@@ -14,8 +14,8 @@ from app.validation.tournament import (assemble, finalize, leaderboard_csv, load
                                        regime_frame, total_return_index)
 
 
-def test_catalog_covers_all_52_strategies():
-    assert [e.no for e in CATALOG] == list(range(1, 53))
+def test_catalog_covers_all_52_strategies_plus_additions():
+    assert [e.no for e in CATALOG] == list(range(1, 56))
     kinds = {e.kind for e in CATALOG}
     assert kinds == {"event", "portfolio", "pairs", "context", "not_testable"}
     for e in CATALOG:
@@ -24,7 +24,7 @@ def test_catalog_covers_all_52_strategies():
         if e.testable:
             assert e.combos(), e.id
     assert {e.no for e in CATALOG if e.family == "I"} == {50, 51, 52}
-    assert len(testable()) == 34  # 52 - 15 NOT TESTABLE (missing data) - 3 context inputs
+    assert len(testable()) == 37  # 52 - 15 NOT TESTABLE - 3 context inputs + 3 additional published methods
 
 
 def test_bootstrap_and_deflated_sharpe():

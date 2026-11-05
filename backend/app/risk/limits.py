@@ -39,6 +39,10 @@ class RiskConfig(BaseModel):
     max_stop_pct_intraday: float = Field(1.5, gt=0, le=10)
     max_stop_pct_swing: float = Field(6.0, gt=0, le=25)
     max_stop_pct_positional: float = Field(10.0, gt=0, le=40)
+    # How much out-of-sample evidence a strategy needs before its setups become BUY/SELL (see decision/policy.py):
+    # strict = passed every tournament test; balanced = statistically positive OOS edge after costs AND worked in the
+    # current market regime (labelled PROVISIONAL); aggressive = positive OOS expectancy (labelled SPECULATIVE).
+    evidence_policy: str = Field("balanced", pattern="^(strict|balanced|aggressive)$")
     costs: CostModel = Field(default_factory=CostModel)
 
     def max_stop_pct(self, mode: str) -> float:
@@ -58,6 +62,7 @@ class TradeProposal:
     target: float | None
     qty: int
     avg_turnover_cr: float | None
+    manual: bool = False  # user-entered paper order: risk-reward minimum is advisory (warning), not a block
 
 
 @dataclass
@@ -123,7 +128,8 @@ def check_trade(p: TradeProposal, state: PortfolioState, cfg: RiskConfig) -> Ris
             if not tgt_ok else f"Target {p.target:.2f} on the correct side of entry")
         risk = abs(p.entry - p.stop)
         rr = abs(p.target - p.entry) / risk if risk > 0 else 0.0
-        add("risk_reward", rr >= cfg.min_risk_reward, f"Risk-reward {rr:.2f} vs minimum {cfg.min_risk_reward:.2f}")
+        add("risk_reward", rr >= cfg.min_risk_reward, f"Risk-reward {rr:.2f} vs minimum {cfg.min_risk_reward:.2f}",
+            "warn" if p.manual else "block")
 
     risk_amt = abs(p.entry - p.stop) * p.qty
     max_risk = state.equity * cfg.risk_per_trade_pct / 100.0

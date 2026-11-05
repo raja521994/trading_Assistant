@@ -553,6 +553,150 @@ class StructureBos(_PivotBase):
         return None
 
 
+class TtmSqueeze(LibStrategy):
+    """John Carter's TTM Squeeze ("Mastering the Trade", ch. 11): Bollinger Bands inside Keltner Channels = volatility
+    compression; the trade is taken when the squeeze releases with positive, rising momentum."""
+    SPEC = spec("ttm_squeeze", "TTM Squeeze breakout (John Carter)", "Trend following",
+                {"n": 20, "bb_k": 2.0, "kc_k": 1.5, "min_squeeze": 5, "atr_stop_mult": 2.0, "target_r": None,
+                 "max_hold_bars": 30})
+
+    @property
+    def warmup(self) -> int:
+        return 220
+
+    def prepare(self, df, base=None):
+        out = super().prepare(df, base)
+        n = int(self.params["n"])
+        c, h, lo = out["close"], out["high"], out["low"]
+        mid = c.rolling(n).mean()
+        sd = c.rolling(n).std(ddof=0)
+        atr = ind.atr(h, lo, c, n)
+        sq_on = ((mid + self.params["bb_k"] * sd) < (mid + self.params["kc_k"] * atr)) & \
+                ((mid - self.params["bb_k"] * sd) > (mid - self.params["kc_k"] * atr))
+        out["sq_on"] = sq_on.astype(float)
+        out["sq_run"] = sq_on.astype(int).groupby((~sq_on).cumsum()).cumsum().astype(float)
+        dev = c - ((h.rolling(n).max() + lo.rolling(n).min()) / 2 + mid) / 2
+        out["sq_mom"] = _linreg_end(dev, n)
+        return out
+
+    def entry(self, a, i):
+        p = self.params
+        run_prev, on, m0, m1 = a["sq_run"][i - 1], a["sq_on"][i], a["sq_mom"][i - 1], a["sq_mom"][i]
+        if not ok(run_prev, m0, m1, a["ema50"][i], a["atr14"][i]):
+            return None
+        if run_prev >= p["min_squeeze"] and on == 0 and m1 > 0 and m1 > m0 and a["close"][i] > a["ema50"][i]:
+            return self.long_setup(a, i, self.atr_stop(a, i), [
+                f"Squeeze released after {int(run_prev)} bars of Bollinger Bands inside Keltner Channels",
+                f"Momentum {m1:.2f} positive and rising", "Close above EMA50"], "Momentum turns down / stop")
+        return None
+
+    def exit(self, a, i, direction):
+        m0, m1, m2 = a["sq_mom"][i - 2], a["sq_mom"][i - 1], a["sq_mom"][i]
+        if ok(m0, m1, m2) and m2 < m1 < m0:
+            return "Squeeze momentum fell for two consecutive bars"
+        return None
+
+
+def _linreg_end(s: pd.Series, n: int) -> pd.Series:
+    """Rolling least-squares line evaluated at the window's last point (causal, vectorised)."""
+    y = s.to_numpy(float)
+    x = np.arange(len(y), dtype=float)
+    valid = ~np.isnan(y)
+    y0 = np.where(valid, y, 0.0)
+    cs = lambda v: np.concatenate([[0.0], np.cumsum(v)])  # noqa: E731
+    sy, sxy, cnt = cs(y0), cs(x * y0), cs(valid.astype(float))
+    out = np.full(len(y), np.nan)
+    xm = (n - 1) / 2.0
+    sxx = n * (n * n - 1) / 12.0
+    for_idx = np.arange(n - 1, len(y))
+    a, b = for_idx - n + 1, for_idx + 1
+    full = (cnt[b] - cnt[a]) == n
+    s_y = sy[b] - sy[a]
+    s_xy = sxy[b] - sxy[a] - a * s_y  # x relative to window start
+    slope = (s_xy - xm * s_y) / sxx
+    val = s_y / n + slope * xm
+    out[for_idx[full]] = val[full]
+    return pd.Series(out, index=s.index)
+
+
+class ConnorsRsi(LibStrategy):
+    """Larry Connors & Alvarez ConnorsRSI(3,2,100) pullback in a long-term uptrend."""
+    SPEC = spec("connors_rsi", "ConnorsRSI pullback (Connors)", "Mean reversion",
+                {"entry_crsi": 10, "exit_sma": 5, "atr_stop_mult": 3.0, "target_r": None, "max_hold_bars": 10})
+    trigger_rule = "signal_close"
+
+    @property
+    def warmup(self) -> int:
+        return 210
+
+    def prepare(self, df, base=None):
+        out = super().prepare(df, base)
+        c = out["close"]
+        d = np.sign(c.diff().fillna(0.0)).to_numpy()
+        streak = np.zeros(len(d))
+        for k in range(1, len(d)):
+            if d[k] == 0:
+                streak[k] = 0
+            elif d[k] == np.sign(streak[k - 1]) or streak[k - 1] == 0:
+                streak[k] = streak[k - 1] + d[k]
+            else:
+                streak[k] = d[k]
+        roc = c.pct_change()
+        out["crsi"] = (ind.rsi(c, 3) + ind.rsi(pd.Series(streak, index=c.index), 2)
+                       + ind.pct_rank(roc, 101)) / 3.0
+        out["sma_exit"] = ind.sma(c, int(self.params["exit_sma"]))
+        return out
+
+    def entry(self, a, i):
+        cr, s200 = a["crsi"][i], a["sma200"][i]
+        if ok(cr, s200, a["atr14"][i]) and a["close"][i] > s200 and cr < self.params["entry_crsi"]:
+            return self.long_setup(a, i, self.atr_stop(a, i), [
+                f"ConnorsRSI {cr:.1f} < {self.params['entry_crsi']} (short-term oversold)",
+                f"Long-term uptrend: close above SMA200 {s200:.2f}"], "Close below the volatility stop")
+        return None
+
+    def exit(self, a, i, direction):
+        if ok(a["sma_exit"][i]) and a["close"][i] > a["sma_exit"][i]:
+            return f"Close above SMA{self.params['exit_sma']}"
+        return None
+
+
+class ElderTripleScreen(LibStrategy):
+    """Alexander Elder's Triple Screen ("Trading for a Living"): weekly trend up (EMA of weekly-equivalent length
+    rising), daily oscillator pullback (2-day Force Index below zero), buy-stop above the previous high."""
+    SPEC = spec("elder_triple_screen", "Elder Triple Screen", "Trend following",
+                {"trend_ema": 65, "atr_stop_mult": 2.0, "target_r": 2.0, "max_hold_bars": 20})
+
+    @property
+    def warmup(self) -> int:
+        return 210
+
+    def prepare(self, df, base=None):
+        out = super().prepare(df, base)
+        n = int(self.params["trend_ema"])
+        out["tr_ema"] = ind.ema(out["close"], n)
+        out["tr_ema_5"] = out["tr_ema"].shift(5)
+        out["force2"] = ind.ema(out["close"].diff() * out["volume"], 2)
+        return out
+
+    def entry(self, a, i):
+        e, e5, f, c = a["tr_ema"][i], a["tr_ema_5"][i], a["force2"][i], a["close"][i]
+        if not ok(e, e5, f, a["atr14"][i], a["ema200"][i]):
+            return None
+        if e > e5 and c > e and c > a["ema200"][i] and f < 0 and a["force2"][i - 1] >= 0:
+            stop = min(a["low"][i], a["low"][i - 1]) - 0.5 * a["atr14"][i]
+            return self.long_setup(a, i, stop, [
+                f"Screen 1: weekly trend up (EMA{self.params['trend_ema']} rising, close above it)",
+                "Screen 2: 2-day Force Index turned negative (pullback)",
+                "Screen 3: buy only above this bar's high (trigger)"], "Close below the 2-day low stop")
+        return None
+
+    def exit(self, a, i, direction):
+        if ok(a["tr_ema"][i]) and a["close"][i] < a["tr_ema"][i]:
+            return f"Close below EMA{self.params['trend_ema']} (trend screen failed)"
+        return None
+
+
 DAILY = [HighBreakout52w, MinerviniVcp, DarvasBox, IchimokuBreakout, HigherHighBreakout, RibbonMacd, EmaPullback,
          RsNewHigh, BollingerReversion, OversoldBounce, RelVolBreakout, ObvDivergence, PivotSR, CandleAtSupport,
-         StructureBos]
+         StructureBos, TtmSqueeze, ConnorsRsi, ElderTripleScreen]

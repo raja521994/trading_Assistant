@@ -199,6 +199,13 @@ CATALOG: list[Entry] = [
           "context", missing_data=["Results/board-meeting dates", "F&O ban list", "Circuit/surveillance lists",
                                    "Corporate-action dates", "RBI policy / Budget dates"],
           note="Not connected; the event gate reports UNKNOWN rather than passing silently."),
+    # Additional widely published methods (added after the original 52; same fixed-grid, no-tuning rules)
+    Entry(53, "ttm_squeeze", "TTM Squeeze breakout (John Carter)", "A", "event", regime_hypothesis="bull",
+          stability_params=["min_squeeze", "kc_k"]),
+    Entry(54, "connors_rsi", "ConnorsRSI pullback in uptrend (Larry Connors)", "C", "event", regime_hypothesis="bull",
+          grid=[{"entry_crsi": 10}, {"entry_crsi": 15}], stability_params=["atr_stop_mult", "exit_sma"]),
+    Entry(55, "elder_triple_screen", "Elder Triple Screen (Alexander Elder)", "A", "event", regime_hypothesis="bull",
+          stability_params=["trend_ema", "atr_stop_mult"]),
 ]
 
 BY_ID = {e.id: e for e in CATALOG}
