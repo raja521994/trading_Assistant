@@ -162,9 +162,9 @@ def put_risk(cfg: RiskConfig, db: Session = Depends(get_db)) -> dict[str, Any]:
     changed = {k: {"from": old[k], "to": v} for k, v in cfg.model_dump().items() if old.get(k) != v}
     audit(db, "risk_config_updated", {"changed": changed})
     db.commit()
-    with _lock:
-        run_scan_and_persist(db)
-        db.commit()
+    from ..jobs.scheduler import rescan_async
+
+    rescan_async()
     return {"config": cfg.model_dump(), "changed": changed}
 
 

@@ -152,10 +152,9 @@ def get_policy(db: Session = Depends(get_db)) -> dict[str, Any]:
 @router.put("/policy")
 def put_policy(req: PolicyUpdate, db: Session = Depends(get_db)) -> dict[str, Any]:
     from ..decision import policy as pol
-    from ..jobs.scheduler import _lock
+    from ..jobs.scheduler import rescan_async
     from ..paper.broker import audit
     from ..risk.limits import load_risk_config, save_risk_config
-    from ..signals.engine import run_scan_and_persist
 
     if req.policy not in pol.POLICY_MIN_TIER:
         raise HTTPException(400, f"policy must be one of {', '.join(pol.POLICY_MIN_TIER)}")
@@ -165,10 +164,8 @@ def put_policy(req: PolicyUpdate, db: Session = Depends(get_db)) -> dict[str, An
     save_risk_config(db, cfg)
     audit(db, "evidence_policy_changed", {"from": old, "to": req.policy})
     db.commit()
-    with _lock:
-        run_scan_and_persist(db)
-        db.commit()
-    return {"policy": req.policy, "previous": old}
+    rescan_async()
+    return {"policy": req.policy, "previous": old, "note": "Saved - the scanner is re-running in the background"}
 
 
 @router.get("/ml/report")

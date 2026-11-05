@@ -86,6 +86,21 @@ def evidence_job(force: bool = False) -> None:
         _err(f"evidence: {type(exc).__name__}: {exc}")
 
 
+def rescan_async() -> None:
+    """Re-run the scanner in the background after a settings change (never blocks the API request)."""
+
+    def work() -> None:
+        try:
+            with _lock, session_scope() as s:
+                r = run_scan_and_persist(s)
+                status["last_scan"] = {"at": int(time.time()), "count": len(r["recommendations"])}
+        except Exception as exc:  # noqa: BLE001
+            log.exception("rescan failed")
+            _err(f"rescan: {type(exc).__name__}: {exc}")
+
+    threading.Thread(target=work, name="rescan", daemon=True).start()
+
+
 def tick() -> None:
     with _lock, session_scope() as s:
         update_signal_states(s)
