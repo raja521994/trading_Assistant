@@ -90,7 +90,7 @@ volumes. If anything passes there, the validation is broken.
 
 ## 5. Latest results (real Kite data, run 2026-10-16)
 
-**0 of 34 testable strategies passed every criterion. The Top 10 is empty, and nothing is padded into it.**
+**0 of 34 testable strategies passed every criterion (re-run 2026-11-05 with 37 strategies: still 0, random-walk control 0 of 27; TTM Squeeze PF 1.08, Elder Triple Screen 0.97, ConnorsRSI 0.59). The Top 10 is empty, and nothing is padded into it.**
 The random-walk control passed 0 of 24.
 
 | Family | Passed | Median OOS PF | Reading |
