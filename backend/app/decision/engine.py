@@ -41,6 +41,7 @@ from ..realtime.service import service as realtime
 from ..realtime.store import STALE_SECONDS, store
 from ..risk.limits import load_risk_config
 from ..validation.tournament import NO_TRADE_MSG, load_report
+from . import policy as pol
 
 CONFIG_FILE = BACKEND_DIR / "config" / "decision.yaml"
 
@@ -143,29 +144,26 @@ def decay_monitor(session: Session, report: dict[str, Any] | None, conf: dict[st
 
 
 def eligible_strategies(report: dict[str, Any] | None, regime: dict[str, Any], conf: dict[str, Any],
-                        decay: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """(eligible, rejected-with-reason) among tournament strategies."""
+                        decay: list[dict[str, Any]], policy: str = "strict"
+                        ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """(eligible, rejected-with-reason): strategies whose evidence tier in the current regime meets the policy."""
     if not report:
         return [], []
     disabled = {d["id"] for d in decay if d["disabled"]}
-    rs = conf["regime_suitability"]
     eligible, rejected = [], []
     for row in report["leaderboard"]:
         det = report["details"].get(row["id"]) or {}
-        if row.get("result") != "PASS":
-            rejected.append({"id": row["id"], "name": row["name"], "reason":
-                             f"did not pass the tournament (first failed: {row.get('first_failed')})"})
+        q = pol.qualify(row["id"], regime["trend"], policy, report)
+        if q is None or not q["ok"]:
+            rejected.append({"id": row["id"], "name": row["name"], "tier": (q or {}).get("tier", "NONE"),
+                             "reason": (q or {}).get("detail") or f"did not pass (first failed: {row.get('first_failed')})"})
             continue
         if row["id"] in disabled:
-            rejected.append({"id": row["id"], "name": row["name"], "reason": "decay monitor: paper results below band"})
+            rejected.append({"id": row["id"], "name": row["name"], "tier": q["tier"],
+                             "reason": "decay monitor: paper results below the expected band"})
             continue
         bucket = (det.get("regimes") or {}).get(f"trend:{regime['trend']}") or {}
-        if (bucket.get("num_trades") or 0) < rs["min_trades"] or (bucket.get("profit_factor") or 0) < rs["min_profit_factor"]:
-            rejected.append({"id": row["id"], "name": row["name"], "reason":
-                             f"not suitable for a {regime['trend']} regime (OOS PF {bucket.get('profit_factor')} over "
-                             f"{bucket.get('num_trades', 0)} trades in this regime)"})
-            continue
-        eligible.append({**row, "details": det, "regime_bucket": bucket})
+        eligible.append({**row, "details": det, "regime_bucket": bucket, "tier": q["tier"], "tier_detail": q["detail"]})
     return eligible, rejected
 
 
@@ -206,7 +204,16 @@ def decide(session: Session, now: datetime | None = None, report: dict[str, Any]
     stale = market_open and label != "SIMULATED" and (not feed_ok or age is None or age > STALE_SECONDS)
     regime = regime_state(session, now, conf)
     decay = decay_monitor(session, report, conf)
-    eligible, rejected = eligible_strategies(report, regime, conf, decay)
+    policy = cfg.evidence_policy
+    eligible, rejected = eligible_strategies(report, regime, conf, decay, policy)
+    base_budget = regime["exposure_budget_pct"]
+    if eligible and base_budget < pol.BUDGET_FLOOR[policy]:
+        # the selected strategies have their own positive record in THIS regime: trade them at reduced size
+        regime = {**regime, "exposure_budget_pct": pol.BUDGET_FLOOR[policy],
+                  "multiplier": pol.BUDGET_FLOOR[policy] / 100.0,
+                  "budget_note": f"Regime default {base_budget:.0f}% raised to {pol.BUDGET_FLOOR[policy]:.0f}% by the "
+                                 f"'{policy}' policy because the eligible strategies were profitable in this regime "
+                                 "out of sample"}
 
     from ..paper.broker import portfolio_state
 
@@ -218,9 +225,13 @@ def decide(session: Session, now: datetime | None = None, report: dict[str, Any]
          (f"live feed {(health.get('feed') or {}).get('state')}, last tick {age}s ago" if market_open else
           "market closed - plans are for the next session, using the last official prices")},
         {"name": "Tournament evidence", "passed": bool(report),
-         "detail": f"run {report['run_id']}: {report['headline']}" if report else "No tournament run yet"},
+         "detail": (f"run {report['run_id']}: {report['headline']} Policy '{policy}' accepts evidence tier "
+                    f"{pol.POLICY_MIN_TIER[policy]} or better: {len(eligible)} strateg"
+                    f"{'y' if len(eligible) == 1 else 'ies'} eligible in this regime")
+         if report else "No tournament run yet"},
         {"name": "Regime exposure budget", "passed": regime["exposure_budget_pct"] > 0,
-         "detail": f"{regime['label']} -> {regime['exposure_budget_pct']:.0f}% of normal risk"},
+         "detail": f"{regime['label']} -> {regime['exposure_budget_pct']:.0f}% of normal risk"
+                   + (f" ({regime['budget_note']})" if regime.get("budget_note") else "")},
         {"name": "Kill switch", "passed": not cfg.kill_switch, "detail": "on" if cfg.kill_switch else "off"},
         {"name": "Daily loss limit", "passed": not daily_loss_hit,
          "detail": f"realised today Rs {pstate.realized_pnl_today:,.0f} (limit -{cfg.max_daily_loss_pct}% of equity)"},
@@ -233,14 +244,18 @@ def decide(session: Session, now: datetime | None = None, report: dict[str, Any]
     picks, skipped = _construct(session, candidates, regime, cfg, conf, pstate) if not blocking else ([], [])
     out = {"generated_at": now.isoformat(timespec="seconds"), "data_label": label, "market_open": market_open,
            "regime": regime, "gates": gates,
-           "eligible_strategies": [{"id": e["id"], "name": e["name"], "family": e["family"],
+           "policy": {"name": policy, "min_tier": pol.POLICY_MIN_TIER[policy], "info": pol.POLICY_INFO},
+           "eligible_strategies": [{"id": e["id"], "name": e["name"], "family": e["family"], "tier": e["tier"],
                                     "regime_pf": e["regime_bucket"].get("profit_factor"),
                                     "regime_trades": e["regime_bucket"].get("num_trades")} for e in eligible],
            "rejected_strategies": rejected, "decay_monitor": decay, "weights": conf["weights"],
            "tournament_run": report["run_id"] if report else None,
            "disclaimer": "Research and paper trading only. Not investment advice. Confidence is shown as a range."}
     if picks:
-        out.update({"decision": "BUY", "message": f"TOP {len(picks)} BUYS", "picks": picks, "skipped": skipped,
+        tiers = sorted({p["tier"] for p in picks}, key=pol.TIERS.index)
+        note = "" if tiers == ["VALIDATED"] else (
+            f" - evidence tier {', '.join(tiers)} (did not clear every validation test; smaller size, paper trade first)")
+        out.update({"decision": "BUY", "message": f"TOP {len(picks)} BUYS{note}", "picks": picks, "skipped": skipped,
                     "watch_only": []})
     else:
         near = _near_miss_watch(session, report, regime, cfg, now, label, market_open) if not stale else []
@@ -260,7 +275,7 @@ def _near_miss_watch(session: Session, report: dict[str, Any] | None, regime: di
         failed = [c for c in det.get("checks") or [] if c.get("passed") is False]
         if row.get("result") == "FAIL" and len(failed) == 1 and failed[0]["name"] != "point_in_time_universe":
             near.append({**row, "details": det, "regime_bucket": (det.get("regimes") or {}).get(
-                f"trend:{regime['trend']}") or {}, "failed": failed[0]})
+                f"trend:{regime['trend']}") or {}, "failed": failed[0], "tier": "NONE"})
     if not near:
         return []
     recs = _signals(session, near, cfg, now, label, market_open)
@@ -321,7 +336,7 @@ def _signals(session: Session, eligible: list[dict[str, Any]], cfg: Any, now: da
             snap = last_row(features(key, daily[key])) if key in daily else {}
             rec = build_recommendation(strat, key, inst, cand, p, a, snap, bench_ret_63, ev, cfg, weights, None,
                                        {"ok": True, "status": "OK"}, now, label, realtime.freshness(key[0], key[1]))
-            rec["tournament"] = {"id": e["id"], "family": BY_ID[e["id"]].family_name,
+            rec["tournament"] = {"id": e["id"], "family": BY_ID[e["id"]].family_name, "tier": e["tier"],
                                  "score": (det.get("composite") or {}).get("score"),
                                  "expectancy_ci": (det.get("bootstrap") or {}).get("expectancy_r_ci"),
                                  "win_rate_pct": o.get("win_rate_pct"), "num_trades": o.get("num_trades"),
@@ -435,6 +450,8 @@ def _construct(session: Session, recs: list[dict[str, Any]], regime: dict[str, A
             "confidence": {"expectancy_r_range": t.get("expectancy_ci"),
                            "win_rate_range_pct": _wilson(int(round((t.get("win_rate_pct") or 0) / 100 * n_tr)), n_tr),
                            "note": "95% ranges from out-of-sample trades; past results do not guarantee future ones"},
+            "tier": min((x["tournament"]["tier"] for x in s["recs"]), key=lambda t: pol.TIERS.index(t)),
+            "ml": r.get("ml"),
             "signal_id": r.get("signal_id"), "state": r["state"], "reference_price": r["reference_price"],
             "freshness": r.get("freshness"),
             "what_to_check": "Event risk is UNKNOWN (results date, F&O ban, circuit limits not connected) - verify first.",

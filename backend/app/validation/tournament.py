@@ -30,7 +30,7 @@ from .evaluate import Bundle, evaluate_in_worker, init_worker
 
 log = logging.getLogger(__name__)
 CONFIG_FILE = BACKEND_DIR / "config" / "tournament.yaml"
-OUT_DIR = BACKEND_DIR / "var" / "tournament"
+OUT_DIR = Path(os.environ.get("TOURNAMENT_DIR") or BACKEND_DIR / "var" / "tournament")
 TOURNAMENT_VERSION = "1.0"
 NO_TRADE_MSG = "NO TRADE: no setup has a validated edge in the current regime"
 

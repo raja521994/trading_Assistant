@@ -109,7 +109,10 @@ def _trade(t: PaperTrade) -> dict[str, Any]:
             "status": t.status, "last_price": t.last_price, "unrealized_pnl": unreal, "exit_price": t.exit_price,
             "exit_time": _ist(t.exit_ts), "exit_reason": t.exit_reason, "costs": round(t.entry_costs + t.exit_costs, 2),
             "gross_pnl": t.gross_pnl, "net_pnl": t.net_pnl, "r_multiple": t.r_multiple,
-            "value": round(t.entry_price * t.qty, 2), "data_label": (t.details or {}).get("quote_status")}
+            "value": round(t.entry_price * t.qty, 2), "data_label": (t.details or {}).get("quote_status"),
+            "unvalidated": bool((t.details or {}).get("unvalidated")),
+            "signal_action": (t.details or {}).get("signal_action"),
+            "risk_warnings": ((t.details or {}).get("risk_checks") or {}).get("warnings", [])}
 
 
 @router.post("/paper/orders")

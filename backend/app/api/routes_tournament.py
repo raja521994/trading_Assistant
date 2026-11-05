@@ -130,3 +130,56 @@ def decision_weights(req: WeightsUpdate) -> dict[str, Any]:
     if any(v < 0 for v in req.weights.values()):
         raise HTTPException(400, "Weights must be >= 0")
     return save_weights(req.weights)
+
+
+# ------------------------------------------------------------------ evidence policy & ML meta-model
+
+class PolicyUpdate(BaseModel):
+    policy: str
+
+
+@router.get("/policy")
+def get_policy(db: Session = Depends(get_db)) -> dict[str, Any]:
+    from ..decision import policy as pol
+    from ..decision.engine import load_config as dconf, regime_state
+    from ..providers.sample import now_ist
+    from ..risk.limits import load_risk_config
+
+    trend = regime_state(db, now_ist(), dconf())["trend"]
+    return pol.summary(trend, load_risk_config(db).evidence_policy)
+
+
+@router.put("/policy")
+def put_policy(req: PolicyUpdate, db: Session = Depends(get_db)) -> dict[str, Any]:
+    from ..decision import policy as pol
+    from ..jobs.scheduler import _lock
+    from ..paper.broker import audit
+    from ..risk.limits import load_risk_config, save_risk_config
+    from ..signals.engine import run_scan_and_persist
+
+    if req.policy not in pol.POLICY_MIN_TIER:
+        raise HTTPException(400, f"policy must be one of {', '.join(pol.POLICY_MIN_TIER)}")
+    cfg = load_risk_config(db)
+    old = cfg.evidence_policy
+    cfg.evidence_policy = req.policy
+    save_risk_config(db, cfg)
+    audit(db, "evidence_policy_changed", {"from": old, "to": req.policy})
+    db.commit()
+    with _lock:
+        run_scan_and_persist(db)
+        db.commit()
+    return {"policy": req.policy, "previous": old}
+
+
+@router.get("/ml/report")
+def ml_report() -> dict[str, Any]:
+    from ..ml import meta
+
+    return {"report": meta.report(), "status": meta.status()}
+
+
+@router.post("/ml/train")
+def ml_train() -> dict[str, Any]:
+    from ..ml import meta
+
+    return meta.start_background()

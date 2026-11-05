@@ -159,13 +159,21 @@ function Invoke-Native([string]$Dir, [string]$Exe, [string[]]$ArgList) {
     if ($code -ne 0) { throw "'$Exe $($ArgList -join ' ')' failed with exit code $code" }
 }
 
-if (-not (Test-Path (Join-Path $Backend ".venv"))) {
-    Write-Host "Installing backend dependencies (first run)..." -ForegroundColor Cyan
-    Invoke-Native $Backend $uv @("sync")
+function Test-Stale([string]$Lock, [string]$Stamp) {
+    return (-not (Test-Path $Stamp)) -or ((Test-Path $Lock) -and (Get-Item $Lock).LastWriteTime -gt (Get-Item $Stamp).LastWriteTime)
 }
-if (-not (Test-Path (Join-Path $Frontend "node_modules"))) {
-    Write-Host "Installing frontend dependencies (first run)..." -ForegroundColor Cyan
+
+$venvStamp = Join-Path $Backend ".venv\.synced"
+if (-not (Test-Path (Join-Path $Backend ".venv")) -or (Test-Stale (Join-Path $Backend "uv.lock") $venvStamp)) {
+    Write-Host "Installing / updating backend dependencies..." -ForegroundColor Cyan
+    Invoke-Native $Backend $uv @("sync")
+    Set-Content $venvStamp (Get-Date -Format o)
+}
+$nodeStamp = Join-Path $Frontend "node_modules\.installed"
+if (-not (Test-Path (Join-Path $Frontend "node_modules")) -or (Test-Stale (Join-Path $Frontend "package-lock.json") $nodeStamp)) {
+    Write-Host "Installing / updating frontend dependencies..." -ForegroundColor Cyan
     Invoke-Native $Frontend $npm @("install", "--no-audit", "--no-fund")
+    Set-Content $nodeStamp (Get-Date -Format o)
 }
 
 $backendPid = $null

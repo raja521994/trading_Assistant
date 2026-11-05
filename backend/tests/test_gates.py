@@ -45,5 +45,6 @@ def test_intraday_strategy_not_regime_gated():
 
 def test_playbook_headline_defensive_below_200dma():
     pb = build_playbook(regime(100, 110), {"donchian_breakout": EV_GOOD}, RiskConfig(), "LIVE")
-    assert pb["benchmark_above_200dma"] is False and pb["headline"].startswith("Defensive")
+    assert pb["benchmark_above_200dma"] is False and "setups are WAIT" in pb["headline"]
+    assert all(not (r["regime_gate"] and r["edge_gate"]) for r in pb["strategies"])
     assert len(pb["strategies"]) == 5

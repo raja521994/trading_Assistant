@@ -171,9 +171,24 @@ def weekly_tournament() -> None:
     tn.start_background()
 
 
+def weekly_ml() -> None:
+    """Retrain the meta-label model weekly (outside market hours). It is used only if it validates out of sample."""
+    from ..ml import meta
+    from ..providers.sample import now_ist
+
+    p = active_provider()
+    if p.name == "sample" or status.get("backfill") != "done" or status.get("startup") != "done":
+        return
+    if p.session_state(now_ist()) == "OPEN" or meta.status()["state"] == "running" or not meta.is_stale():
+        return
+    log.info("starting the scheduled meta-label model training")
+    meta.start_background()
+
+
 def start_background(tasks: list[asyncio.Task]) -> None:
     s = get_settings()
     threading.Thread(target=initial_load, name="initial-load", daemon=True).start()
     tasks.append(asyncio.create_task(_loop(tick, s.quote_refresh_seconds, "tick")))
     tasks.append(asyncio.create_task(_loop(ingest_and_rescan, s.ingest_refresh_seconds, "ingest")))
     tasks.append(asyncio.create_task(_loop(weekly_tournament, 3600, "tournament-schedule")))
+    tasks.append(asyncio.create_task(_loop(weekly_ml, 3600, "ml-schedule")))

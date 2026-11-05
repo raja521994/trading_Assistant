@@ -199,3 +199,39 @@ def test_provider_switch_retires_signals_in_every_state(client):
         s.commit()
         got = {x.symbol: x.state for x in s.query(Signal).filter(Signal.provider == "kite")}
     assert got == {"OLDWATCH": "EXPIRED", "OLDSETUP": "EXPIRED", "OLDTRIGGERED": "INVALIDATED", "OLDACTIVE": "EXITED"}
+
+
+def test_paper_trading_blocked_signal_small_capital_and_manual_rr(client):
+    import uuid
+
+    recs = client.get("/api/scanner").json()["recommendations"]
+    blocked = next((r for r in recs if r["state"] in ("SETUP", "TRIGGERED", "ACTIVE") and r["action"] not in
+                    ("BUY", "SELL") and r.get("signal_id") and r["direction_code"] == "LONG"), None)
+    if blocked is not None:
+        r1 = client.post("/api/paper/orders", json={"signal_id": blocked["signal_id"], "idempotency_key": uuid.uuid4().hex})
+        assert r1.status_code in (400, 409, 422) and "paper trade anyway" in str(r1.json())
+        r2 = client.post("/api/paper/orders", json={"signal_id": blocked["signal_id"], "idempotency_key": uuid.uuid4().hex,
+                                                    "acknowledge_unvalidated": True})
+        body = r2.json()
+        assert r2.status_code == 200 or "Rejected by risk engine" in str(body), body
+        if r2.status_code == 200:
+            t = next(x for x in client.get("/api/paper/trades").json() if x["id"] == body["trade"]["id"])
+            assert t["unvalidated"] is True
+            client.post(f"/api/paper/trades/{t['id']}/close")
+    # manual order: risk-reward below the minimum is a warning, not a rejection
+    q = client.get("/api/quote/NSE/RELIANCE").json()
+    px = q["last"]
+    r3 = client.post("/api/paper/orders", json={"symbol": "RELIANCE", "exchange": "NSE", "direction": "LONG",
+                                                "stop": round(px * 0.98, 2), "target": round(px * 1.01, 2), "qty": 1,
+                                                "idempotency_key": uuid.uuid4().hex})
+    assert r3.status_code == 200, r3.json()
+    t3 = next(x for x in client.get("/api/paper/trades").json() if x["id"] == r3.json()["trade"]["id"])
+    assert any("Risk-reward" in w for w in t3["risk_warnings"])
+    client.post(f"/api/paper/trades/{t3['id']}/close")
+    # tiny capital -> explicit, actionable message instead of a silent zero quantity
+    cfg = client.get("/api/risk/config").json()["config"]
+    client.put("/api/risk/config", json={**cfg, "account_equity": 1000.0})
+    r4 = client.post("/api/paper/orders", json={"symbol": "RELIANCE", "exchange": "NSE", "direction": "LONG",
+                                                "stop": round(px * 0.98, 2), "idempotency_key": uuid.uuid4().hex})
+    client.put("/api/risk/config", json=cfg)
+    assert r4.status_code != 200 and "needs account capital of at least" in str(r4.json())

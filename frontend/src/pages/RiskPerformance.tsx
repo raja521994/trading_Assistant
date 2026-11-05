@@ -58,14 +58,27 @@ function RiskEditor() {
           <label key={k} className="flex flex-col gap-0.5"><span className="label">{label}</span>
             <input className="input" type="number" step="any" value={String(cfg[k])} onChange={(e) => setCfg({ ...cfg, [k]: Number(e.target.value) })} /></label>
         ))}
+        <label className="flex flex-col gap-0.5"><span className="label">Evidence policy (when setups become BUY)</span>
+          <select className="input" value={String(cfg.evidence_policy ?? "balanced")} onChange={(e) => setCfg({ ...cfg, evidence_policy: e.target.value })}>
+            <option value="strict">Strict - only fully validated strategies</option>
+            <option value="balanced">Balanced - positive OOS edge in this regime (default)</option>
+            <option value="aggressive">Aggressive - weaker positive evidence</option>
+          </select></label>
         {BOOL_FIELDS.map(([k, label]) => (
           <label key={k} className="flex items-center gap-1 text-xs mt-3"><input type="checkbox" checked={!!cfg[k]} onChange={(e) => setCfg({ ...cfg, [k]: e.target.checked })} />{label}</label>
         ))}
       </div>
+      {Number(cfg.account_equity) < 100000 && (
+        <div className="rounded border border-amber-700 bg-amber-950/30 p-2 text-xs text-amber-200">
+          Account equity is only ₹{inr(Number(cfg.account_equity), 0)}. With {String(cfg.risk_per_trade_pct)}% risk and {String(cfg.max_alloc_per_instrument_pct)}% max allocation per
+          stock, one share of a ₹{inr(Number(cfg.account_equity) * Number(cfg.max_alloc_per_instrument_pct) / 100, 0)}+ stock cannot be bought, so most setups size to 0 shares (NO TRADE).
+          Enter the capital you actually want to paper trade with (e.g. 100000 or 1000000).
+        </div>
+      )}
       <details className="text-xs">
         <summary className="cursor-pointer text-slate-400">Transaction cost model (estimates)</summary>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-2 mt-2">
-          {Object.entries(costs).filter(([k]) => k !== "note").map(([k, v]) => (
+          {Object.entries(costs).filter(([k]) => k !== "note" && k !== "as_of").map(([k, v]) => (
             <label key={k} className="flex flex-col gap-0.5"><span className="label">{titleCase(k)}</span>
               <input className="input" type="number" step="any" value={String(v)} onChange={(e) => setCfg({ ...cfg, costs: { ...costs, [k]: Number(e.target.value) } })} /></label>
           ))}

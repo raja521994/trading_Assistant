@@ -149,6 +149,69 @@ function CriteriaEditor() {
   );
 }
 
+
+type MlStats = { n: number; win_rate_pct: number | null; expectancy_r: number | null; profit_factor_r: number | null };
+type MlReport = {
+  trained_at: string; setups: number; data_range: string[]; oos_auc: number | null; oos_brier: number; base_rate_brier: number;
+  all: MlStats; selected: MlStats; p_no_lift: number; useful: boolean; verdict: string; rule: string;
+  folds: { test_year: number; train_setups: number; test_setups: number; auc: number | null; all: MlStats; selected: MlStats }[];
+  feature_importance: { feature: string; importance: number }[] | null;
+};
+type PolicySummary = { policy: string; min_tier: string; trend: string; info: Record<string, string>;
+  strategies: { strategy: string; name: string; tier: string; accepted: boolean; oos_trades: number; profit_factor: number | null;
+    regime_trades: number; regime_pf: number | null; reason: string }[] };
+
+function MlPanel() {
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: ["ml"], queryFn: () => api.get<{ report: MlReport | null; status: { state: string; message: string | null; error: string | null } }>("/ml/report"),
+    refetchInterval: (x) => (x.state.data?.status.state === "running" ? 3000 : 60_000) });
+  const train = useMutation({ mutationFn: () => api.post("/ml/train", {}), onSuccess: () => qc.invalidateQueries({ queryKey: ["ml"] }) });
+  const r = q.data?.report;
+  const st = q.data?.status;
+  const sv = (x: MlStats) => `${x.n} setups · win ${num(x.win_rate_pct, 1)}% · exp ${num(x.expectancy_r, 3)}R · PF ${num(x.profit_factor_r)}`;
+  return (
+    <Panel title="ML meta-labelling model (Lopez de Prado) — walk-forward validation" right={
+      <button className="btn" disabled={st?.state === "running" || train.isPending} onClick={() => train.mutate()}>{st?.state === "running" ? `Training… ${st.message ?? ""}` : "Retrain"}</button>}>
+      {!r ? <div className="text-xs text-slate-500">No model trained yet. Training collects every historical setup of the daily strategies (~2–4 min).</div> : (
+        <div className="space-y-2 text-xs">
+          <div className={clsx("rounded border p-2 font-semibold", r.useful ? "border-emerald-700 text-emerald-200" : "border-amber-700 text-amber-200")}>{r.verdict}</div>
+          <div className="text-slate-400">Gradient-boosted classifier predicts whether each strategy setup ends in profit from causal features
+            (trend, momentum, volatility, volume, relative strength, stop distance, NIFTY regime, India VIX). Trained only on setups closed before each test year.
+            {" "}{r.setups} setups {r.data_range.join(" → ")} · trained {r.trained_at}.</div>
+          <div className="grid grid-cols-2 xl:grid-cols-4 gap-2">
+            <div><div className="label">OOS AUC (0.5 = random)</div><div className="num text-slate-100">{num(r.oos_auc, 3)}</div></div>
+            <div><div className="label">Brier vs base rate</div><div className="num text-slate-100">{num(r.oos_brier, 3)} vs {num(r.base_rate_brier, 3)}</div></div>
+            <div><div className="label">All OOS setups</div><div className="num text-slate-100">{sv(r.all)}</div></div>
+            <div><div className="label">Model-selected setups</div><div className={clsx("num", (r.selected.expectancy_r ?? 0) > (r.all.expectancy_r ?? 0) ? "text-up" : "text-down")}>{sv(r.selected)}</div></div>
+          </div>
+          <table className="tbl"><thead><tr><th>Test year</th><th className="text-right">Train</th><th className="text-right">Test</th><th className="text-right">AUC</th><th>All setups</th><th>Selected by model</th></tr></thead>
+            <tbody>{r.folds.map((f) => <tr key={f.test_year}><td>{f.test_year}</td><td className="num text-right">{f.train_setups}</td><td className="num text-right">{f.test_setups}</td>
+              <td className={clsx("num text-right", (f.auc ?? 0.5) > 0.55 ? "text-up" : (f.auc ?? 0.5) < 0.5 ? "text-down" : "")}>{num(f.auc, 3)}</td><td className="num">{sv(f.all)}</td><td className="num">{sv(f.selected)}</td></tr>)}</tbody></table>
+          <div className="text-[10px] text-slate-500">Decision rule: {r.rule}. Bootstrap p(no lift) = {num(r.p_no_lift, 3)}. Retrained weekly; switches on automatically only if a future validation shows lift.</div>
+        </div>)}
+      {st?.state === "error" && <div className="text-xs text-red-300">{st.error}</div>}
+    </Panel>
+  );
+}
+
+const TIER_CLS: Record<string, string> = { VALIDATED: "text-emerald-300", PROVISIONAL: "text-sky-300", SPECULATIVE: "text-amber-300", NONE: "text-slate-500" };
+
+function PolicyTiers() {
+  const q = useQuery({ queryKey: ["policy"], queryFn: () => api.get<PolicySummary>("/policy"), refetchInterval: 60_000 });
+  const d = q.data;
+  if (!d) return null;
+  return (
+    <Panel title={`Evidence tiers in the current ${d.trend.toUpperCase()} regime — policy '${d.policy}' accepts ${d.min_tier}+`} bodyClass="p-0 overflow-auto max-h-[50vh]">
+      <table className="tbl"><thead><tr><th>Strategy</th><th>Tier</th><th>Used now</th><th className="text-right">OOS trades</th><th className="text-right">OOS PF</th><th className="text-right">Regime trades</th><th className="text-right">Regime PF</th><th>Why</th></tr></thead>
+        <tbody>{d.strategies.map((x) => <tr key={x.strategy}><td>{x.name}</td><td className={clsx("font-semibold", TIER_CLS[x.tier])}>{x.tier}</td>
+          <td className={x.accepted ? "text-up" : "text-slate-500"}>{x.accepted ? "yes" : "no"}</td><td className="num text-right">{x.oos_trades}</td>
+          <td className="num text-right">{num(x.profit_factor)}</td><td className="num text-right">{x.regime_trades}</td><td className="num text-right">{num(x.regime_pf)}</td>
+          <td className="whitespace-normal text-slate-400">{x.reason}</td></tr>)}</tbody></table>
+      <div className="p-2 text-[10px] text-slate-500">{Object.entries(d.info).map(([k, v]) => <div key={k}><b>{k}</b>: {v}</div>)}</div>
+    </Panel>
+  );
+}
+
 export function TournamentPanel() {
   const qc = useQueryClient();
   const [force, setForce] = useState(false);
@@ -250,6 +313,9 @@ export function TournamentPanel() {
               </div>
             </Panel>
           </div>
+
+          <PolicyTiers />
+          <MlPanel />
 
           <Panel title={`NOT TESTABLE (${r.not_testable.length}) and context inputs (${r.context_inputs.length})`}>
             <table className="tbl"><thead><tr><th>#</th><th>Strategy / input</th><th>Missing data</th><th>Note</th></tr></thead>

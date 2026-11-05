@@ -6,6 +6,8 @@ from pathlib import Path
 
 _tmp = Path(tempfile.mkdtemp(prefix="atd-tests-"))
 os.environ["DATABASE_URL"] = f"sqlite:///{(_tmp / 'test.db').as_posix()}"
+os.environ["TOURNAMENT_DIR"] = str(_tmp / "tournament")
+os.environ["ML_DIR"] = str(_tmp / "ml")
 os.environ["BACKGROUND_JOBS"] = "false"
 os.environ["DATA_PROVIDER"] = "sample"
 os.environ["LLM_PROVIDER"] = "template"

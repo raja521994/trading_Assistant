@@ -33,18 +33,19 @@ export function PaperTradeBox({ rec }: { rec: Recommendation }) {
   const qc = useQueryClient();
   const [key] = useState(newIdempotencyKey);
   const [confirming, setConfirming] = useState(false);
+  const validated = rec.action === "BUY" || rec.action === "SELL";
   const m = useMutation({
     mutationFn: () => api.post<{ trade: { id: number; qty: number; entry_price: number }; note: string }>("/paper/orders", {
-      signal_id: rec.signal_id, idempotency_key: key,
+      signal_id: rec.signal_id, idempotency_key: key, acknowledge_unvalidated: !validated,
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["paper"] });
       qc.invalidateQueries({ queryKey: ["performance"] });
     },
   });
-  const eligible = (rec.action === "BUY" || rec.action === "SELL") && ["SETUP", "TRIGGERED", "ACTIVE"].includes(rec.state) && rec.signal_id;
+  const eligible = ["SETUP", "TRIGGERED", "ACTIVE"].includes(rec.state) && rec.signal_id && rec.direction_code !== "NEUTRAL";
   if (!eligible) {
-    return <div className="text-xs text-slate-500">Paper trading is available only for SETUP/TRIGGERED/ACTIVE signals with a BUY or SELL action. This signal is {rec.state} / {rec.action}.</div>;
+    return <div className="text-xs text-slate-500">Paper trading needs a SETUP, TRIGGERED or ACTIVE signal with an entry and stop. This signal is {rec.state}.</div>;
   }
   const ps = rec.position_size;
   const err = m.error instanceof ApiError ? m.error : null;
@@ -52,11 +53,13 @@ export function PaperTradeBox({ rec }: { rec: Recommendation }) {
   return (
     <div className="space-y-2 text-xs">
       {!confirming && !m.isSuccess && (
-        <button className="btn btn-primary" onClick={() => setConfirming(true)}>Paper {rec.action === "BUY" ? "buy" : "sell"} (simulated)…</button>
+        <button className={clsx("btn", validated ? "btn-primary" : "")} onClick={() => setConfirming(true)}>
+          {validated ? `Paper ${rec.action === "BUY" ? "buy" : "sell"} (simulated)…` : `Paper ${rec.direction_code === "SHORT" ? "sell" : "buy"} anyway (not a validated ${rec.action})…`}</button>
       )}
       {confirming && !m.isSuccess && (
         <div className="rounded border border-sky-800 bg-sky-950/30 p-2 space-y-1">
           <div className="font-semibold text-sky-200">Order preview — PAPER ONLY, nothing is sent to a broker</div>
+          {!validated && <div className="rounded border border-amber-700 bg-amber-950/40 p-1 text-amber-200">This setup is <b>{rec.action}</b>, not a validated BUY/SELL: {rec.action_reasons.join("; ")}. The paper trade is recorded as unvalidated (for learning).</div>}
           <KV k="Instrument" v={`${rec.exchange}:${rec.symbol}`} />
           <KV k="Side" v={rec.direction_code} />
           <KV k="Suggested quantity" v={ps?.qty ?? "—"} />

@@ -243,6 +243,18 @@ def build_recommendation(strat: Strategy, key: tuple[str, str], inst: Any, cand:
                           "detail": (f"Live data stale: last tick {fr.get('tick_age_s')} s ago (> 5 s in market hours)"
                                      if fr.get("stale") else f"Last tick {fr.get('tick_age_s')} s ago"
                                      if fr.get("tick_age_s") is not None else "No live tick yet (outside session or REST data)")}
+    ml = None
+    if setup and not strat.intraday and state in ("SETUP", "TRIGGERED", "ACTIVE"):
+        try:
+            from ..ml.meta import score_setup
+
+            ml = score_setup(strat.meta.id, p, p.index[cand["signal_i"]], entry_ref, setup.stop)
+        except Exception:  # noqa: BLE001 - the model is optional; never break the scanner
+            ml = None
+    if ml is not None and ml["model_useful"] and cfg.evidence_policy != "aggressive":
+        gates["ml"] = {"name": "ML win probability", "applies": True, "passed": bool(ml["above_threshold"]),
+                       "detail": (f"Meta-label model P(win) {ml['p_win']:.0%} vs threshold {ml['threshold']:.0%} "
+                                  f"(walk-forward OOS AUC {ml['oos_auc']})")}
     if action in ("BUY", "SELL"):
         failed = [g for g in gates.values() if g["applies"] and not g["passed"]]
         if failed:
@@ -312,8 +324,9 @@ def build_recommendation(strat: Strategy, key: tuple[str, str], inst: Any, cand:
                                  else "Live order execution is disabled in this build - research and paper trading only"),
         "executable": False,
         "expires_at": pd.Timestamp(expires, unit="s", tz="UTC").tz_convert(IST).isoformat(),
-        "expires_at_epoch": expires, "data_quality": dq, "gates": gates, "live": fr,
-        **_final_score(comp["score"], action, gates, regime, direction_code),
+        "expires_at_epoch": expires, "data_quality": dq, "gates": gates, "live": fr, "ml": ml,
+        "evidence_tier": (gates.get("edge") or {}).get("tier"),
+        **_final_score(comp["score"], action, gates, regime, direction_code, ml),
     }
 
 
@@ -327,14 +340,19 @@ def regime_multiplier(regime: dict[str, Any] | None, direction: str) -> float:
 
 
 def _final_score(score: float, action: str, gates: dict[str, Any], regime: dict[str, Any] | None,
-                 direction: str) -> dict[str, Any]:
-    """final = composite x regime multiplier x gate multiplier (0 if any applicable gate fails or not actionable)."""
+                 direction: str, ml: dict[str, Any] | None = None) -> dict[str, Any]:
+    """final = composite x regime multiplier x gate multiplier x ML multiplier (0 if any applicable gate fails or the
+    setup is not actionable). The ML multiplier (P(win) / base rate, clipped 0.6-1.4) is applied only when the
+    meta-label model showed out-of-sample lift."""
     blocked_by = [g["name"] for g in gates.values() if g.get("applies") and not g.get("passed")]
     gate_mult = 0.0 if blocked_by or action not in ("BUY", "SELL") else 1.0
     reg_mult = regime_multiplier(regime, direction)
-    return {"final_score": round(score * reg_mult * gate_mult, 1), "regime_multiplier": reg_mult,
-            "gate_multiplier": gate_mult, "blocked": bool(blocked_by) or action not in ("BUY", "SELL"),
-            "blocked_by": blocked_by}
+    ml_mult = 1.0
+    if ml and ml.get("model_useful") and ml.get("threshold"):
+        ml_mult = round(min(1.4, max(0.6, ml["p_win"] / ml["threshold"])), 3)
+    return {"final_score": round(score * reg_mult * gate_mult * ml_mult, 1), "regime_multiplier": reg_mult,
+            "gate_multiplier": gate_mult, "ml_multiplier": ml_mult,
+            "blocked": bool(blocked_by) or action not in ("BUY", "SELL"), "blocked_by": blocked_by}
 
 
 def add_confluence(recs: list[dict[str, Any]]) -> None:
@@ -387,6 +405,14 @@ def evaluate_gates(strat: Strategy, direction: str, evidence: dict[str, Any] | N
     has worked and (b) the strategy has a walk-forward out-of-sample edge (in the current regime when enough trades)."""
     up = benchmark_trend_up(regime)
     facts = ((regime or {}).get("current") or {}).get("facts") or {}
+    from ..decision import policy as pol
+
+    q = pol.qualify(strat.meta.id, pol.trend_from_facts(facts), cfg.evidence_policy)
+    if q is not None:
+        return {"edge": {"name": "Validated edge", "applies": True, "passed": bool(q["ok"]), "detail": q["detail"],
+                         "tier": q["tier"], "policy": cfg.evidence_policy, "regime_pf": q["regime_pf"],
+                         "regime_trades": q["regime_trades"], "profit_factor": q["profit_factor"],
+                         "trades": q["oos_trades"], "source": f"tournament {q['run_id']}"}}
     long_daily = direction == "LONG" and not strat.intraday
     regime_gate = {
         "name": "Market regime", "applies": bool(cfg.regime_filter and long_daily),
@@ -420,31 +446,45 @@ def evaluate_gates(strat: Strategy, direction: str, evidence: dict[str, Any] | N
 
 
 def build_playbook(regime: dict[str, Any] | None, evidence: dict[str, dict[str, Any]], cfg: RiskConfig,
-                   data_label: str) -> dict[str, Any]:
+                   data_label: str, extra: list[str] | None = None) -> dict[str, Any]:
+    from ..decision import policy as pol
+
     up = benchmark_trend_up(regime)
     facts = ((regime or {}).get("current") or {}).get("facts") or {}
+    trend = pol.trend_from_facts(facts)
     rows = []
-    for sid in all_strategy_ids():
+    for sid in all_strategy_ids() + list(extra or []):
         strat = get_strategy(sid)
         g = evaluate_gates(strat, "LONG", evidence.get(sid), regime, cfg)
+        q = pol.evaluate(sid, trend)
         ev = evidence.get(sid) or {}
+        edge = g["edge"]
+        reg = g.get("regime", {"passed": True, "applies": False})
         rows.append({"strategy": sid, "name": strat.meta.name, "timeframe": strat.meta.timeframe,
-                     "oos_trades": ev.get("num_trades"), "oos_profit_factor": ev.get("profit_factor"),
+                     "oos_trades": (q or {}).get("oos_trades", ev.get("num_trades")),
+                     "oos_profit_factor": (q or {}).get("profit_factor", ev.get("profit_factor")),
                      "oos_net_return_pct": ev.get("net_return_pct"), "benchmark_return_pct": ev.get("benchmark_return_pct"),
-                     "regime_split": ev.get("regime_split"), "regime_gate": g["regime"]["passed"] or not g["regime"]["applies"],
-                     "edge_gate": g["edge"]["passed"] or not g["edge"]["applies"], "edge_detail": g["edge"]["detail"]})
+                     "regime_split": ev.get("regime_split"), "regime_trades": (q or {}).get("regime_trades"),
+                     "regime_pf": (q or {}).get("regime_pf"), "tier": (q or {}).get("tier"),
+                     "regime_gate": reg["passed"] or not reg["applies"],
+                     "edge_gate": edge["passed"] or not edge["applies"], "edge_detail": edge["detail"]})
     tradable = [r for r in rows if r["regime_gate"] and r["edge_gate"]]
-    if up is False and cfg.regime_filter:
-        headline = (f"Defensive: NIFTY 50 {facts.get('close')} is below its 200-day average {facts.get('sma200')}. "
-                    "Historically, long breakout/trend setups lost money in this regime - the scanner shows them as WAIT.")
-    elif not tradable:
-        headline = "No strategy currently shows a proven out-of-sample edge on this data - all setups are WAIT."
+    pol_name = cfg.evidence_policy
+    if tradable:
+        headline = (f"{trend.upper()} regime, policy '{pol_name}': {len(tradable)} strateg"
+                    f"{'y' if len(tradable) == 1 else 'ies'} with enough out-of-sample evidence - "
+                    + ", ".join(f"{r['name']} [{r['tier'] or 'legacy'}]" for r in tradable))
     else:
-        headline = f"{len(tradable)} strateg{'y' if len(tradable) == 1 else 'ies'} pass the regime and edge gates."
+        headline = (f"{trend.upper()} regime (NIFTY 50 {facts.get('close')} vs 200-DMA {facts.get('sma200')}), policy "
+                    f"'{pol_name}': no strategy has enough out-of-sample evidence in this regime - setups are WAIT."
+                    + (" Try the 'balanced' or 'aggressive' policy to see weaker evidence." if pol_name == "strict" else ""))
     return {"benchmark_above_200dma": up, "headline": headline, "strategies": rows, "data_label": data_label,
+            "trend": trend, "policy": pol_name,
             "settings": {"regime_filter": cfg.regime_filter, "require_oos_edge": cfg.require_oos_edge,
-                         "min_oos_profit_factor": cfg.min_oos_profit_factor, "min_oos_trades": cfg.min_oos_trades},
-            "note": "Gates are based on walk-forward out-of-sample results on the loaded data; they reduce, not remove, risk."}
+                         "min_oos_profit_factor": cfg.min_oos_profit_factor, "min_oos_trades": cfg.min_oos_trades,
+                         "evidence_policy": pol_name},
+            "note": "Evidence tiers come from the latest strategy tournament (walk-forward out-of-sample, after costs); "
+                    "they reduce, not remove, risk."}
 
 
 def _blocked(key: tuple[str, str], inst: Any, tf: str, dq: dict[str, Any], strategies: list[str]) -> dict[str, Any]:
@@ -483,7 +523,13 @@ def scan(session: Session, now: datetime | None = None) -> dict[str, Any]:
     recs: list[dict[str, Any]] = []
     blocked: dict[tuple[str, tuple[str, str]], dict[str, Any]] = {}
     notes: list[str] = []
-    for sid in all_strategy_ids():
+    from ..decision import policy as pol
+    from ..quant.library.context import load_context
+
+    load_context(session)
+    trend = pol.trend_from_facts(((regime or {}).get("current") or {}).get("facts"))
+    extra = [x for x in pol.qualifying_library_ids(trend, cfg.evidence_policy) if x not in all_strategy_ids()]
+    for sid in all_strategy_ids() + extra:
         strat = get_strategy(sid)
         tf = strat.meta.timeframe
         data = intraday if strat.intraday else daily
@@ -510,7 +556,8 @@ def scan(session: Session, now: datetime | None = None) -> dict[str, Any]:
             if cand is None:
                 continue
             rec = build_recommendation(strat, key, imap.get(key), cand, p, a, daily_snaps.get(key, {}),
-                                       bench_ret_63, evidence.get(sid), cfg, weights, regime, dq, now, label,
+                                       bench_ret_63, evidence.get(sid) or pol.tournament_evidence(sid, label), cfg,
+                                       weights, regime, dq, now, label,
                                        realtime.freshness(key[0], key[1]))
             rec["provider"] = provider.name
             recs.append(rec)
@@ -518,7 +565,9 @@ def scan(session: Session, now: datetime | None = None) -> dict[str, Any]:
     recs.sort(key=lambda r: (r["blocked"], -r["final_score"], -r["score"]))
     return {"generated_at": now.isoformat(), "data_label": label, "provider": provider.name,
             "recommendations": recs, "blocked": list(blocked.values()), "notes": notes, "regime": regime,
-            "playbook": build_playbook(regime, evidence, cfg, label),
+            "playbook": build_playbook(regime, evidence, cfg, label, extra),
+            "policy": {"name": cfg.evidence_policy, "trend": trend, "library_strategies": extra,
+                       "info": pol.POLICY_INFO[cfg.evidence_policy], "min_tier": pol.POLICY_MIN_TIER[cfg.evidence_policy]},
             "expected_last_bar": {k: (v.isoformat() if v else None) for k, v in exp.items()},
             "seconds": round(time.perf_counter() - t0, 2)}
 

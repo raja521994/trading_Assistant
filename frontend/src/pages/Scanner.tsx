@@ -7,7 +7,7 @@ import { inr, istTime, num, titleCase } from "../lib/format";
 import { ActionBadge, DataLabel, Empty, ErrorBox, Loading, Panel, ScoreBar, StateBadge } from "../components/ui";
 import { PaperTradeBox, RecommendationDetail } from "../components/Recommendation";
 import { LivePrice, StaleBadge } from "../components/Live";
-import { DecisionPanel } from "../components/Decision";
+import { DecisionPanel, PolicySelect, TierBadge } from "../components/Decision";
 
 type Tab = "buy" | "watch" | "all";
 
@@ -54,7 +54,8 @@ export default function Scanner() {
         <h1 className="text-lg font-semibold">AI Trading Scanner</h1>
         {d && <DataLabel label={d.data_label} />}
         {d && <span className="text-xs text-slate-500">{d.total} candidates · generated {istTime(d.generated_at)} IST · {Object.entries(d.counts).map(([k, v]) => `${k} ${v}`).join(" · ")}</span>}
-        <button className="btn ml-auto" onClick={() => refresh.mutate()} disabled={refresh.isPending}>{refresh.isPending ? "Scanning…" : "Re-scan now"}</button>
+        <span className="ml-auto"><PolicySelect /></span>
+        <button className="btn" onClick={() => refresh.mutate()} disabled={refresh.isPending}>{refresh.isPending ? "Scanning…" : "Re-scan now"}</button>
       </div>
 
       <DecisionPanel />
@@ -115,7 +116,7 @@ export default function Scanner() {
             {rows.length === 0 ? <Empty>{tab === "buy" ? "NO TRADE — no setup passes every gate right now. See Watch only for blocked setups and why." : "No candidates match these filters."}</Empty> : (
               <table className="tbl">
                 <thead><tr>
-                  <th>Symbol</th><th>Strategy</th><th>Mode</th><th>State</th><th>Action</th><th>Dir</th>
+                  <th>Symbol</th><th>Strategy</th><th>Evidence</th><th>Mode</th><th>State</th><th>Action</th><th>Dir</th>
                   <th className="text-right">Live</th><th className="text-right">Trigger / fill</th><th className="text-right">Stop</th>
                   <th className="text-right">Target</th><th className="text-right">R:R</th><th className="text-right">Qty</th>
                   <th className="text-right">Final</th><th>Score</th><th>Confl.</th><th>Gates</th><th>Risk</th><th>Liq</th>
@@ -126,9 +127,10 @@ export default function Scanner() {
                       className={clsx("cursor-pointer", selected?.signal_id === r.signal_id && "bg-ink-800")}>
                       <td><span className="font-semibold text-slate-100">{r.symbol}</span> <span className="text-[10px] text-slate-500">{r.exchange}</span></td>
                       <td className="text-slate-300">{r.strategy_name}</td>
+                      <td><TierBadge tier={r.evidence_tier} />{r.ml && <div className="text-[9px] text-slate-500" title={r.ml.model_useful ? "ML filter active" : "ML model showed no out-of-sample lift - shown for information only"}>ML {Math.round(r.ml.p_win * 100)}%</div>}</td>
                       <td>{r.mode}</td>
                       <td><StateBadge state={r.state} /></td>
-                      <td><ActionBadge action={r.action} /></td>
+                      <td title={r.action_reasons.join("\n")}><ActionBadge action={r.action} /></td>
                       <td className={r.direction === "bullish" ? "text-up" : r.direction === "bearish" ? "text-down" : "text-slate-400"}>{r.direction}</td>
                       <td className="text-right whitespace-nowrap"><LivePrice exchange={r.exchange} symbol={r.symbol} fallback={r.reference_price} />
                         <StaleBadge exchange={r.exchange} symbol={r.symbol} marketOpen={r.freshness.market_session === "OPEN"} /></td>

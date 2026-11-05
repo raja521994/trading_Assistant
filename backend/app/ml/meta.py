@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -25,7 +27,7 @@ import pandas as pd
 from ..config import BACKEND_DIR
 
 log = logging.getLogger(__name__)
-ML_DIR = BACKEND_DIR / "var" / "ml"
+ML_DIR = Path(os.environ.get("ML_DIR") or BACKEND_DIR / "var" / "ml")
 MODEL_FILE = ML_DIR / "meta_model.joblib"
 REPORT_FILE = ML_DIR / "meta_report.json"
 MODEL_VERSION = "1.0"

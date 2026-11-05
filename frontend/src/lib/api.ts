@@ -145,6 +145,9 @@ export interface Recommendation {
   confluence?: { count: number; strategies: string[]; all_strategies: string[]; conflict: boolean };
   stop_info?: { stop_pct: number; cap_pct: number; atr14: number | null; atr_multiple: number | null; within_cap: boolean; rule: string } | null;
   target_info?: { method: string; p50_r?: number; p75_r?: number | null; n_trades?: number } | null;
+  evidence_tier?: string | null;
+  ml?: { p_win: number; threshold: number; above_threshold: boolean; model_useful: boolean; oos_auc: number | null } | null;
+  ml_multiplier?: number;
 }
 
 export interface DataQuality {
