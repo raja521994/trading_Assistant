@@ -96,6 +96,19 @@ regime and which gates pass. `backend/research/kite_analysis.py` reproduces the 
   95% confidence ranges, or exactly `NO TRADE: no setup has a validated edge in the current regime` plus Watch Only
   candidates with what must change. The event gate (results dates, F&O ban, circuits) is reported as UNKNOWN.
 
+### Evidence policy and ML (why you see BUY vs WAIT)
+
+- **Evidence policy** (selector on the AI Scanner and in Risk & Performance): *strict* = only strategies that
+  passed every tournament test; **balanced (default)** = strategies with a statistically positive out-of-sample edge
+  after costs that also made money in the current market regime (tier PROVISIONAL, traded at 50% size in a bear
+  market); *aggressive* = also weaker positive evidence (SPECULATIVE). Every recommendation shows its tier.
+- **ML meta-labelling model** (Strategy Lab): walk-forward validated; used only if it shows out-of-sample lift. On
+  the current data it does not (AUC 0.48), so it is displayed but ignored. See docs/STRATEGY_TOURNAMENT.md §8-10.
+- **Account equity** (Risk & Performance) drives position size. If it is too small for one share within the 1% risk
+  / 15% allocation limits, the setup is NO TRADE with the minimum capital needed in the reason.
+- **Paper trading**: any SETUP / TRIGGERED / ACTIVE setup can be paper traded; setups that are not a validated BUY
+  need an explicit "paper buy anyway" confirmation and are recorded as unvalidated.
+
 ## Optional other data sources (hidden in the UI)
 
 The code also contains read-only Upstox and Yahoo Finance adapters (`DATA_PROVIDER=upstox|yahoo`), not shown in the UI.
@@ -173,7 +186,7 @@ To reset all local state, stop the backend and delete `backend/var/`.
 ### Tests, typecheck, build
 
 ```powershell
-cd backend;  uv run pytest            # 125 tests: indicators, setup state machine, look-ahead (all strategies), costs,
+cd backend;  uv run pytest            # 132 tests: indicators, setup state machine, look-ahead (all strategies), costs,
                                       # candles, Kite protocol, replayed tick file, gates, sizing, tournament pass logic,
                                       # random-walk control, decision engine, API, WebSocket
 cd frontend; npm run typecheck        # tsc --noEmit

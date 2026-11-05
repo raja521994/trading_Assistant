@@ -131,3 +131,49 @@ NIFTY200 Momentum 30 index returned +189% over the same window. That gap is why 
 - Pairs ignore futures margin, lot sizes and roll costs.
 - Portfolio strategies use a volatility-based risk unit (2 × ATR) for R.
 - Charges are estimates. Verify them at zerodha.com/charges and update `config/charges.yaml`.
+
+## 8. Evidence policy (when setups become BUY)
+
+The strict pass criteria above are deliberately hard; on current data no strategy clears them, mostly because of the
+multiple-testing bar. So the app does not show NO TRADE forever, each strategy gets an **evidence tier for the
+current market regime** (`backend/app/decision/policy.py`). The user picks how much evidence is required
+(Risk & Performance, or the selector on the AI Scanner):
+
+| Tier | Requirements (all out-of-sample, after costs) | Accepted by |
+|---|---|---|
+| VALIDATED | passed every tournament criterion and PF >= 1.2 over >= 20 trades in the current regime | strict, balanced, aggressive |
+| PROVISIONAL | >= 30 trades, PF >= 1.2, expectancy CI lower bound > 0, profitable at 2x costs, passes the survivorship re-test, PF >= 1.2 over >= 20 trades in the current regime | balanced (default), aggressive |
+| SPECULATIVE | >= 30 trades, PF >= 1.1, expectancy > 0, profitable at 2x costs, not losing in the current regime | aggressive |
+| NONE | anything else, and cross-sectional strategies (no point-in-time constituents) | never |
+
+The tier is shown on every scanner row and every decision-engine pick. When a non-strict policy accepts a strategy
+in a regime whose default exposure budget is lower (bear = 0%), the budget is raised to 50%, so trades are taken
+at half size. Strict keeps the original behaviour.
+
+## 9. ML meta-labelling (Lopez de Prado)
+
+`backend/app/ml/meta.py`. A gradient-boosted classifier estimates the probability that a strategy setup ends in
+profit, using causal features at the signal close: trend, momentum, volatility, volume, relative strength, stop
+distance, NIFTY regime and India VIX. Validation is walk-forward by calendar year: each test year uses a model
+trained only on setups that exited at least 5 days earlier. The model is used (as a filter and as a ranking
+multiplier) **only if** all of these hold:
+
+- OOS AUC >= 0.55
+- the selected setups have higher expectancy and PF than all setups
+- bootstrap p(no lift) < 0.10
+
+**Result on the current data (13,205 setups, 2018-2026):** OOS AUC 0.48. The selected setups had *lower* expectancy
+(-0.01R vs +0.16R). A regression-on-R variant and ridge models were also tested once each; all had a negative rank
+correlation with outcomes. The model therefore has **no predictive value here**: it is shown for transparency
+(Strategy Lab → ML panel) and ignored by the decision engine. It retrains weekly and switches on automatically only
+if a later walk-forward shows real lift.
+
+## 10. Additional published strategies
+
+The following were added to the library (numbers 53-55), with the same fixed parameters and no-tuning rules:
+
+- **TTM Squeeze** (John Carter, *Mastering the Trade*)
+- **ConnorsRSI pullback** (Larry Connors)
+- **Elder Triple Screen** (Alexander Elder, *Trading for a Living*)
+
+All library strategies pass the no-future-data test.

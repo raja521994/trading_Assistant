@@ -102,3 +102,9 @@ Scope: the original MVP (Phases 1, 3, 4 + paper trading) plus the real-time / st
 - ✅ Part 8 tests (125), replay mode (stored bars or recorded tick file), config files, README
 - ⬜ Redis (single-process in-memory store chosen; documented trade-off), point-in-time constituents, news,
   fundamentals, delivery %, F&O history, FII/DII and macro feeds
+
+## Prediction improvements (Nov 2026)
+- ✅ Evidence policy tiers (VALIDATED / PROVISIONAL / SPECULATIVE) per strategy and regime; strict / balanced / aggressive
+- ✅ ML meta-labelling with yearly walk-forward + bootstrap lift test (currently no lift -> not used, reported honestly)
+- ✅ TTM Squeeze, ConnorsRSI, Elder Triple Screen added and tournament-tested
+- ✅ Paper trading of blocked setups with acknowledgement; capital-too-small diagnostics; SQLite lock fix

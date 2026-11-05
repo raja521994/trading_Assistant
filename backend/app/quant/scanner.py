@@ -156,8 +156,12 @@ def build_recommendation(strat: Strategy, key: tuple[str, str], inst: Any, cand:
             for q in ("p50", "p75"):
                 if mfe.get(q):
                     targets.append(round(entry_ref + mfe[q] * risk_u if long else entry_ref - mfe[q] * risk_u, 2))
-            rr = round(float(mfe["p50"]), 2)
-            target_info = {"method": "MFE quantiles of walk-forward OOS trades", "p50_r": mfe["p50"],
+            # R:R = reward to target 2 (75th percentile of favourable excursion). Trend strategies win through a minority
+            # of large moves, so the median excursion (target 1) understates the reward; the edge itself is required
+            # separately (positive out-of-sample expectancy via the evidence tier / edge gate).
+            rr = round(float(mfe.get("p75") or mfe["p50"]), 2)
+            target_info = {"method": "MFE quantiles of walk-forward OOS trades (target 1 = median, target 2 = 75th "
+                                     "percentile; R:R measured to target 2)", "p50_r": mfe["p50"],
                            "p75_r": mfe.get("p75"), "n_trades": mfe["n"]}
         elif setup.target_r:
             targets = [round(entry_ref + setup.target_r * risk_u if long else entry_ref - setup.target_r * risk_u, 2)]
@@ -556,7 +560,7 @@ def scan(session: Session, now: datetime | None = None) -> dict[str, Any]:
             if cand is None:
                 continue
             rec = build_recommendation(strat, key, imap.get(key), cand, p, a, daily_snaps.get(key, {}),
-                                       bench_ret_63, evidence.get(sid) or pol.tournament_evidence(sid, label), cfg,
+                                       bench_ret_63, pol.tournament_evidence(sid, label) or evidence.get(sid), cfg,
                                        weights, regime, dq, now, label,
                                        realtime.freshness(key[0], key[1]))
             rec["provider"] = provider.name

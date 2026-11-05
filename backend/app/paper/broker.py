@@ -114,7 +114,7 @@ def place_paper_order(session: Session, req: PaperOrderRequest) -> PaperTrade:
         p = sig.payload
         symbol, exchange, direction, mode = sig.symbol, sig.exchange, sig.direction, sig.mode
         stop = req.stop if req.stop is not None else p.get("stop_loss")
-        target = req.target if req.target is not None else ((p.get("targets") or [None])[0])
+        target = req.target if req.target is not None else ((p.get("targets") or [None])[-1])  # final target
         strategy = sig.strategy
     else:
         if not (req.symbol and req.direction and req.stop):
