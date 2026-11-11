@@ -1,0 +1,30 @@
+# Production stack on the EC2 host (started by deploy/ec2-deploy.sh).
+# DATA_DIR, BASIC_AUTH_USER and BASIC_AUTH_PASSWORD are exported by the deploy script.
+services:
+  backend:
+    build: ../backend
+    restart: unless-stopped
+    # backend.env is mounted (not env_file) so keys/tokens saved from the UI persist and are not shadowed by env vars.
+    volumes:
+      - ${DATA_DIR:?}/var:/app/var
+      - ${DATA_DIR:?}/backend.env:/app/.env
+    expose:
+      - "8000"
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  web:
+    build: ../frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      BASIC_AUTH_USER: ${BASIC_AUTH_USER:?}
+      BASIC_AUTH_PASSWORD: ${BASIC_AUTH_PASSWORD:?}
+    ports:
+      - "80:80"
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }

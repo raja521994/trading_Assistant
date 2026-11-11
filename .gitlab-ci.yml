@@ -1,0 +1,88 @@
+# Pipeline: test -> package (source tarball to S3) -> deploy (SSM Run Command builds and restarts on EC2).
+#
+# CI/CD variables (Settings > CI/CD > Variables), values from the CloudFormation stack outputs:
+#   AWS_ROLE_ARN        DeployRoleArn
+#   AWS_DEFAULT_REGION  e.g. ap-south-1
+#   ARTIFACT_BUCKET     ArtifactBucketName
+#   EC2_INSTANCE_ID     InstanceId
+# AWS access uses GitLab OIDC (no long-lived AWS keys stored in GitLab).
+
+stages: [test, package, deploy]
+
+test:backend:
+  stage: test
+  image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+  variables:
+    UV_CACHE_DIR: .uv-cache
+    BACKGROUND_JOBS: "false"
+  cache:
+    key: { files: [backend/uv.lock] }
+    paths: [.uv-cache]
+  script:
+    - cd backend
+    - uv sync --frozen
+    - uv run pytest
+
+test:frontend:
+  stage: test
+  image: node:20-alpine
+  cache:
+    key: { files: [frontend/package-lock.json] }
+    paths: [frontend/.npm]
+  script:
+    - cd frontend
+    - npm ci --cache .npm --prefer-offline
+    - npm run build
+
+.aws:
+  image: alpine:3.20
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: https://gitlab.com
+  before_script:
+    - apk add --no-cache aws-cli git
+    - echo "$GITLAB_OIDC_TOKEN" > /tmp/web_identity_token
+    - export AWS_WEB_IDENTITY_TOKEN_FILE=/tmp/web_identity_token AWS_ROLE_SESSION_NAME="gitlab-$CI_PIPELINE_ID"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+package:
+  extends: .aws
+  stage: package
+  script:
+    - git archive --format=tar.gz -o release.tar.gz HEAD
+    - aws s3 cp release.tar.gz "s3://$ARTIFACT_BUCKET/releases/$CI_COMMIT_SHA.tar.gz"
+
+deploy:aws:
+  extends: .aws
+  stage: deploy
+  environment:
+    name: production
+  resource_group: production
+  script:
+    - REL="/opt/trading/releases/$CI_COMMIT_SHA"
+    - >-
+      CMD="set -euo pipefail;
+      aws s3 cp s3://$ARTIFACT_BUCKET/releases/$CI_COMMIT_SHA.tar.gz /tmp/release.tar.gz --region $AWS_DEFAULT_REGION;
+      rm -rf $REL; mkdir -p $REL; tar -xzf /tmp/release.tar.gz -C $REL; rm -f /tmp/release.tar.gz;
+      AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION bash $REL/deploy/ec2-deploy.sh $REL"
+    - >-
+      CID=$(aws ssm send-command
+      --instance-ids "$EC2_INSTANCE_ID"
+      --document-name AWS-RunShellScript
+      --comment "deploy $CI_COMMIT_SHORT_SHA"
+      --parameters "{\"commands\":[\"$CMD\"],\"executionTimeout\":[\"3600\"]}"
+      --query Command.CommandId --output text)
+    - echo "SSM command $CID"
+    - |
+      STATUS=Pending
+      for i in $(seq 1 240); do
+        sleep 10
+        STATUS=$(aws ssm get-command-invocation --command-id "$CID" --instance-id "$EC2_INSTANCE_ID" \
+          --query Status --output text 2>/dev/null || echo Pending)
+        case "$STATUS" in Success|Failed|Cancelled|TimedOut) break ;; esac
+      done
+      aws ssm get-command-invocation --command-id "$CID" --instance-id "$EC2_INSTANCE_ID" \
+        --query '[StandardOutputContent,StandardErrorContent]' --output text || true
+      echo "Deployment status: $STATUS"
+      [ "$STATUS" = "Success" ]
