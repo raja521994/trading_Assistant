@@ -1,9 +1,8 @@
-# test -> package (source tarball to S3) -> deploy (SSM Run Command builds and restarts on EC2).
+# test -> deploy (SSM Run Command: the EC2 host downloads this commit from GitHub, builds and restarts).
 #
 # Repository variables (Settings > Secrets and variables > Actions > Variables), from the CloudFormation outputs:
 #   AWS_ROLE_ARN     DeployRoleArn
 #   AWS_REGION       ap-south-1
-#   ARTIFACT_BUCKET  ArtifactBucketName
 #   EC2_INSTANCE_ID  InstanceId
 # AWS access uses GitHub OIDC (no long-lived AWS keys stored in GitHub).
 name: CI / Deploy
@@ -63,26 +62,19 @@ jobs:
       contents: read
       id-token: write
     env:
-      ARTIFACT_BUCKET: ${{ vars.ARTIFACT_BUCKET }}
       EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
-      AWS_REGION: ${{ vars.AWS_REGION }}
     steps:
-      - uses: actions/checkout@v4
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
           role-session-name: github-${{ github.run_id }}
 
-      - name: Upload release
-        run: |
-          git archive --format=tar.gz -o release.tar.gz HEAD
-          aws s3 cp release.tar.gz "s3://$ARTIFACT_BUCKET/releases/$GITHUB_SHA.tar.gz"
-
       - name: Deploy to EC2 via SSM
         run: |
           REL="/opt/trading/releases/$GITHUB_SHA"
-          CMD="set -euo pipefail; aws s3 cp s3://$ARTIFACT_BUCKET/releases/$GITHUB_SHA.tar.gz /tmp/release.tar.gz --region $AWS_REGION; rm -rf $REL; mkdir -p $REL; tar -xzf /tmp/release.tar.gz -C $REL; rm -f /tmp/release.tar.gz; AWS_DEFAULT_REGION=$AWS_REGION bash $REL/deploy/ec2-deploy.sh $REL"
+          URL="https://github.com/$GITHUB_REPOSITORY/archive/$GITHUB_SHA.tar.gz"
+          CMD="set -euo pipefail; rm -rf $REL; mkdir -p $REL; curl -fsSL $URL | tar -xz --strip-components=1 -C $REL; AWS_DEFAULT_REGION=$AWS_REGION bash $REL/deploy/ec2-deploy.sh $REL"
           CID=$(aws ssm send-command \
             --instance-ids "$EC2_INSTANCE_ID" \
             --document-name AWS-RunShellScript \

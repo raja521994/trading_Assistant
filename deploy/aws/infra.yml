@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  AI Trading Dashboard - single EC2 host (docker compose) deployed from GitHub Actions via S3 + SSM Run Command.
+  AI Trading Dashboard - single EC2 host (docker compose) deployed from GitHub Actions via SSM Run Command.
   No inbound SSH; use SSM Session Manager for shell access.
 
 Parameters:
@@ -10,8 +10,9 @@ Parameters:
     AllowedPattern: ^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$
   InstanceType:
     Type: String
-    Default: t3.medium
-    AllowedValues: [t3.medium, t3.large, t3.xlarge, m6i.large]
+    Default: t2.micro
+    AllowedValues: [t2.micro, t3.micro, t3.small, t3.medium]
+    Description: Pick the type your account shows as "Free tier eligible" (t2.micro or t3.micro)
   LatestAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
@@ -32,39 +33,6 @@ Conditions:
   CreateOidc: !Equals [!Ref CreateOidcProvider, "true"]
 
 Resources:
-  ArtifactBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketEncryption:
-        ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
-      PublicAccessBlockConfiguration:
-        BlockPublicAcls: true
-        BlockPublicPolicy: true
-        IgnorePublicAcls: true
-        RestrictPublicBuckets: true
-      OwnershipControls:
-        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
-      LifecycleConfiguration:
-        Rules:
-          - Id: expire-releases
-            Status: Enabled
-            Prefix: releases/
-            ExpirationInDays: 30
-
-  ArtifactBucketPolicy:
-    Type: AWS::S3::BucketPolicy
-    Properties:
-      Bucket: !Ref ArtifactBucket
-      PolicyDocument:
-        Statement:
-          - Sid: DenyInsecureTransport
-            Effect: Deny
-            Principal: "*"
-            Action: s3:*
-            Resource: [!GetAtt ArtifactBucket.Arn, !Sub "${ArtifactBucket.Arn}/*"]
-            Condition: { Bool: { aws:SecureTransport: "false" } }
-
   InstanceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -79,9 +47,6 @@ Resources:
         - PolicyName: trading-dashboard-host
           PolicyDocument:
             Statement:
-              - Effect: Allow
-                Action: s3:GetObject
-                Resource: !Sub "${ArtifactBucket.Arn}/releases/*"
               - Effect: Allow
                 Action: ssm:GetParameter
                 Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/trading-dashboard/*"
@@ -106,6 +71,8 @@ Resources:
     Type: AWS::EC2::LaunchTemplate
     Properties:
       LaunchTemplateData:
+        # "standard" never bills extra CPU credits (t3 defaults to "unlimited")
+        CreditSpecification: { CpuCredits: standard }
         MetadataOptions:
           HttpTokens: required
           HttpPutResponseHopLimit: 1  # keeps containers away from the instance credentials
@@ -138,19 +105,13 @@ Resources:
             -o /usr/local/lib/docker/cli-plugins/docker-buildx
           chmod +x /usr/local/lib/docker/cli-plugins/*
           systemctl enable --now docker
-          # swap helps image builds (pandas/scikit-learn) on smaller instances
+          # swap: the free-tier instance has only 1 GB RAM
           if [ ! -f /swapfile ]; then
-            dd if=/dev/zero of=/swapfile bs=1M count=2048
+            dd if=/dev/zero of=/swapfile bs=1M count=3072
             chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
             echo '/swapfile swap swap defaults 0 0' >> /etc/fstab
           fi
           mkdir -p /opt/trading/releases /opt/trading/data
-
-  ElasticIp:
-    Type: AWS::EC2::EIP
-    Properties:
-      Domain: vpc
-      InstanceId: !Ref Instance
 
   GitHubOidcProvider:
     Type: AWS::IAM::OIDCProvider
@@ -181,9 +142,6 @@ Resources:
           PolicyDocument:
             Statement:
               - Effect: Allow
-                Action: s3:PutObject
-                Resource: !Sub "${ArtifactBucket.Arn}/releases/*"
-              - Effect: Allow
                 Action: ssm:SendCommand
                 Resource:
                   - !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${Instance}"
@@ -194,11 +152,9 @@ Resources:
 
 Outputs:
   DashboardUrl:
-    Value: !Sub "http://${ElasticIp}/"
-    Description: Also register this exact URL as the Redirect URL of your Kite Connect app
+    Value: !Sub "http://${Instance.PublicIp}/"
+    Description: Changes if the instance is stopped/started (no Elastic IP); update the Kite Redirect URL then
   InstanceId:
     Value: !Ref Instance
-  ArtifactBucketName:
-    Value: !Ref ArtifactBucket
   DeployRoleArn:
     Value: !GetAtt DeployRole.Arn

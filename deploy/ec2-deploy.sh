@@ -23,7 +23,9 @@ BASIC_AUTH_PASSWORD=$(aws ssm get-parameter --name "$PARAM_PREFIX/basic-auth-pas
 export DATA_DIR BASIC_AUTH_USER BASIC_AUTH_PASSWORD
 
 COMPOSE=(docker compose -p trading -f "$RELEASE_DIR/deploy/docker-compose.prod.yml")
-"${COMPOSE[@]}" build
+# one image at a time: the free-tier host has 1 GB RAM
+"${COMPOSE[@]}" build backend
+"${COMPOSE[@]}" build web
 "${COMPOSE[@]}" up -d --remove-orphans
 ln -sfn "$RELEASE_DIR" "$APP_DIR/current"
 
@@ -34,6 +36,7 @@ for _ in $(seq 1 60); do
     echo "Deployed $(basename "$RELEASE_DIR")"
     ls -1dt "$APP_DIR"/releases/*/ | tail -n +6 | xargs -r rm -rf
     docker image prune -f >/dev/null
+    docker builder prune -f --filter until=168h >/dev/null
     exit 0
   fi
   sleep 5
