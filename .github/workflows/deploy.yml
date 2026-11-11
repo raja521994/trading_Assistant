@@ -64,6 +64,12 @@ jobs:
     env:
       EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
     steps:
+      - name: Show OIDC token claims (not the token)
+        run: |
+          curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" \
+          | python3 -c "import sys,json,base64; t=json.load(sys.stdin)['value']; p=t.split('.')[1]; p+='='*(-len(p)%4); c=json.loads(base64.urlsafe_b64decode(p)); print(json.dumps({k: c.get(k) for k in ('iss','aud','sub','repository','ref','event_name','environment')}, indent=2))"
+
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
