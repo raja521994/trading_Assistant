@@ -17,15 +17,20 @@ chown "$APP_UID" "$DATA_DIR/backend.env"
 chmod 600 "$DATA_DIR/backend.env"
 chown -R "$APP_UID" "$DATA_DIR/var"
 
-BASIC_AUTH_USER=$(aws ssm get-parameter --name "$PARAM_PREFIX/basic-auth-user" --query Parameter.Value --output text)
-BASIC_AUTH_PASSWORD=$(aws ssm get-parameter --name "$PARAM_PREFIX/basic-auth-password" --with-decryption \
-  --query Parameter.Value --output text)
-export DATA_DIR BASIC_AUTH_USER BASIC_AUTH_PASSWORD
+load_auth() {
+  BASIC_AUTH_USER=$(aws ssm get-parameter --name "$PARAM_PREFIX/basic-auth-user" --query Parameter.Value --output text)
+  BASIC_AUTH_PASSWORD=$(aws ssm get-parameter --name "$PARAM_PREFIX/basic-auth-password" --with-decryption \
+    --query Parameter.Value --output text)
+  export DATA_DIR BASIC_AUTH_USER BASIC_AUTH_PASSWORD
+}
+load_auth
 
 COMPOSE=(docker compose -p trading -f "$RELEASE_DIR/deploy/docker-compose.prod.yml")
 # one image at a time: the free-tier host has 1 GB RAM
 "${COMPOSE[@]}" build backend
 "${COMPOSE[@]}" build web
+# re-read so a password changed during the (slow) build is still applied
+load_auth
 "${COMPOSE[@]}" up -d --remove-orphans
 ln -sfn "$RELEASE_DIR" "$APP_DIR/current"
 
