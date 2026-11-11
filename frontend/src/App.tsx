@@ -13,6 +13,7 @@ import SignalDetail from "./pages/SignalDetail";
 import Charts from "./pages/Charts";
 import StrategyLab from "./pages/StrategyLab";
 import Portfolio from "./pages/Portfolio";
+import Agent from "./pages/Agent";
 import RiskPerformance from "./pages/RiskPerformance";
 import Assistant from "./pages/Assistant";
 import Integrations from "./pages/Integrations";
@@ -23,6 +24,7 @@ const NAV = [
   { to: "/charts", label: "Charts", icon: "▤" },
   { to: "/lab", label: "Strategy Lab", icon: "⚗" },
   { to: "/portfolio", label: "Paper Portfolio", icon: "▣" },
+  { to: "/agent", label: "Trading Agent", icon: "⟳" },
   { to: "/risk", label: "Risk & Performance", icon: "◬" },
   { to: "/assistant", label: "AI Assistant", icon: "✦" },
   { to: "/integrations", label: "Data & Integrations", icon: "⚙" },
@@ -184,6 +186,7 @@ export default function App() {
             <Route path="/charts/:exchange/:symbol" element={<Charts />} />
             <Route path="/lab" element={<StrategyLab />} />
             <Route path="/portfolio" element={<Portfolio />} />
+            <Route path="/agent" element={<Agent />} />
             <Route path="/risk" element={<RiskPerformance />} />
             <Route path="/assistant" element={<Assistant />} />
             <Route path="/integrations" element={<Integrations />} />

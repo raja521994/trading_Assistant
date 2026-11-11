@@ -161,6 +161,24 @@ def switch_provider() -> None:
     threading.Thread(target=initial_load, name="provider-switch", daemon=True).start()
 
 
+def agent_cycle() -> None:
+    """Autonomous paper-trading agent: orchestrator plans, worker executes, every config.cycle_seconds."""
+    from ..agents import service as agent
+    from ..agents.state import load_state
+
+    if status["startup"] != "done":
+        return
+    with session_scope() as s:
+        st = load_state(s)
+    if not st.running:
+        return
+    last = (st.last_cycle or {}).get("at") or 0
+    if time.time() - last < st.config.cycle_seconds:
+        return
+    with _lock, session_scope() as s:
+        agent.run_cycle(s)
+
+
 def weekly_tournament() -> None:
     """Re-run the strategy tournament weekly, outside market hours, once history is backfilled."""
     from ..validation import tournament as tn
@@ -207,3 +225,4 @@ def start_background(tasks: list[asyncio.Task]) -> None:
     tasks.append(asyncio.create_task(_loop(ingest_and_rescan, s.ingest_refresh_seconds, "ingest")))
     tasks.append(asyncio.create_task(_loop(weekly_tournament, 3600, "tournament-schedule")))
     tasks.append(asyncio.create_task(_loop(weekly_ml, 3600, "ml-schedule")))
+    tasks.append(asyncio.create_task(_loop(agent_cycle, 15, "agent")))

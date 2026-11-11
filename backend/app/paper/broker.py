@@ -35,6 +35,7 @@ class PaperOrderRequest(BaseModel):
     qty: int | None = Field(None, ge=1)
     idempotency_key: str = Field(..., min_length=8, max_length=96)
     note: str | None = None
+    strategy: str | None = Field(None, max_length=64)
     # Paper-trade a setup the gates blocked (WAIT / NO TRADE) - for learning; recorded on the trade
     acknowledge_unvalidated: bool = False
 
@@ -121,7 +122,7 @@ def place_paper_order(session: Session, req: PaperOrderRequest) -> PaperTrade:
             raise PaperOrderRejected("Manual paper orders need symbol, direction and stop")
         symbol, exchange, direction = req.symbol, req.exchange or "NSE", req.direction
         mode = req.mode or "swing"
-        stop, target, strategy = req.stop, req.target, "manual"
+        stop, target, strategy = req.stop, req.target, req.strategy or "manual"
     inst = get_instrument(session, symbol, exchange)
     if inst is None or inst.instrument_type != "EQ":
         raise PaperOrderRejected(f"Unknown tradable instrument {exchange}:{symbol}")

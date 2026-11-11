@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api import routes_market, routes_signals, routes_tournament, routes_trading
+from .api import routes_agent, routes_market, routes_signals, routes_tournament, routes_trading
 from .config import get_settings
 from .db import run_migrations
 from .jobs import scheduler
@@ -44,3 +44,4 @@ app.include_router(routes_market.router)
 app.include_router(routes_signals.router)
 app.include_router(routes_trading.router)
 app.include_router(routes_tournament.router)
+app.include_router(routes_agent.router)
