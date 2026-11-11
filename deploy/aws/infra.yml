@@ -18,8 +18,8 @@ Parameters:
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
   GitHubRepo:
     Type: String
-    Default: raja521994/trading_Assistant
-    Description: GitHub repository (owner/name) allowed to deploy
+    Default: raja521994@170508419/trading_Assistant@1454160446
+    Description: Repository as it appears in the GitHub OIDC "sub" claim (owner@ownerId/repo@repoId)
   DeployBranch:
     Type: String
     Default: main
