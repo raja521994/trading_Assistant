@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  AI Trading Dashboard - single EC2 host (docker compose) deployed from GitLab CI via S3 + SSM Run Command.
+  AI Trading Dashboard - single EC2 host (docker compose) deployed from GitHub Actions via S3 + SSM Run Command.
   No inbound SSH; use SSM Session Manager for shell access.
 
 Parameters:
@@ -15,9 +15,10 @@ Parameters:
   LatestAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
-  GitLabProjectPath:
+  GitHubRepo:
     Type: String
-    Description: GitLab project path, e.g. my-user/trading-automation
+    Default: raja521994/trading_Assistant
+    Description: GitHub repository (owner/name) allowed to deploy
   DeployBranch:
     Type: String
     Default: main
@@ -25,7 +26,7 @@ Parameters:
     Type: String
     Default: "true"
     AllowedValues: ["true", "false"]
-    Description: Set to false if an IAM OIDC provider for gitlab.com already exists in this account
+    Description: Set to false if an IAM OIDC provider for token.actions.githubusercontent.com already exists in this account
 
 Conditions:
   CreateOidc: !Equals [!Ref CreateOidcProvider, "true"]
@@ -151,12 +152,12 @@ Resources:
       Domain: vpc
       InstanceId: !Ref Instance
 
-  GitLabOidcProvider:
+  GitHubOidcProvider:
     Type: AWS::IAM::OIDCProvider
     Condition: CreateOidc
     Properties:
-      Url: https://gitlab.com
-      ClientIdList: [https://gitlab.com]
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
 
   DeployRole:
     Type: AWS::IAM::Role
@@ -168,14 +169,13 @@ Resources:
             Principal:
               Federated: !If
                 - CreateOidc
-                - !Ref GitLabOidcProvider
-                - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/gitlab.com"
+                - !Ref GitHubOidcProvider
+                - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
             Action: sts:AssumeRoleWithWebIdentity
             Condition:
               StringEquals:
-                gitlab.com:aud: https://gitlab.com
-              StringLike:
-                gitlab.com:sub: !Sub "project_path:${GitLabProjectPath}:ref_type:branch:ref:${DeployBranch}"
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubRepo}:ref:refs/heads/${DeployBranch}"
       Policies:
         - PolicyName: trading-dashboard-deploy
           PolicyDocument:

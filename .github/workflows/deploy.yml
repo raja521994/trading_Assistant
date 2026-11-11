@@ -1,0 +1,103 @@
+# test -> package (source tarball to S3) -> deploy (SSM Run Command builds and restarts on EC2).
+#
+# Repository variables (Settings > Secrets and variables > Actions > Variables), from the CloudFormation outputs:
+#   AWS_ROLE_ARN     DeployRoleArn
+#   AWS_REGION       ap-south-1
+#   ARTIFACT_BUCKET  ArtifactBucketName
+#   EC2_INSTANCE_ID  InstanceId
+# AWS access uses GitHub OIDC (no long-lived AWS keys stored in GitHub).
+name: CI / Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test-backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      BACKGROUND_JOBS: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - run: uv sync --frozen
+      - run: uv run pytest
+
+  test-frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build
+
+  deploy:
+    needs: [test-backend, test-frontend]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ARTIFACT_BUCKET: ${{ vars.ARTIFACT_BUCKET }}
+      EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: github-${{ github.run_id }}
+
+      - name: Upload release
+        run: |
+          git archive --format=tar.gz -o release.tar.gz HEAD
+          aws s3 cp release.tar.gz "s3://$ARTIFACT_BUCKET/releases/$GITHUB_SHA.tar.gz"
+
+      - name: Deploy to EC2 via SSM
+        run: |
+          REL="/opt/trading/releases/$GITHUB_SHA"
+          CMD="set -euo pipefail; aws s3 cp s3://$ARTIFACT_BUCKET/releases/$GITHUB_SHA.tar.gz /tmp/release.tar.gz --region $AWS_REGION; rm -rf $REL; mkdir -p $REL; tar -xzf /tmp/release.tar.gz -C $REL; rm -f /tmp/release.tar.gz; AWS_DEFAULT_REGION=$AWS_REGION bash $REL/deploy/ec2-deploy.sh $REL"
+          CID=$(aws ssm send-command \
+            --instance-ids "$EC2_INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "deploy ${GITHUB_SHA::8}" \
+            --parameters "{\"commands\":[\"$CMD\"],\"executionTimeout\":[\"3600\"]}" \
+            --query Command.CommandId --output text)
+          echo "SSM command $CID"
+          STATUS=Pending
+          for i in $(seq 1 240); do
+            sleep 10
+            STATUS=$(aws ssm get-command-invocation --command-id "$CID" --instance-id "$EC2_INSTANCE_ID" \
+              --query Status --output text 2>/dev/null || echo Pending)
+            case "$STATUS" in Success|Failed|Cancelled|TimedOut) break ;; esac
+          done
+          aws ssm get-command-invocation --command-id "$CID" --instance-id "$EC2_INSTANCE_ID" \
+            --query '[StandardOutputContent,StandardErrorContent]' --output text || true
+          echo "Deployment status: $STATUS"
+          [ "$STATUS" = "Success" ]
