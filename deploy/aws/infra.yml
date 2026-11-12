@@ -65,7 +65,7 @@ Resources:
           FromPort: 80
           ToPort: 80
           CidrIp: !Ref AllowedCidr
-          Description: Dashboard (redirects to HTTPS; also used for Let's Encrypt)
+          Description: Dashboard (redirects to HTTPS; also used by Lets Encrypt)
         - IpProtocol: tcp
           FromPort: 443
           ToPort: 443
