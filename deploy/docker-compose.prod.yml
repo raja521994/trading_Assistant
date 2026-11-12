@@ -24,7 +24,24 @@ services:
       BASIC_AUTH_USER: ${BASIC_AUTH_USER:?}
       BASIC_AUTH_PASSWORD: ${BASIC_AUTH_PASSWORD:?}
     ports:
+      - "127.0.0.1:8080:80"  # host-local health check; public traffic goes through caddy
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on: [web]
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?}
+    ports:
       - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${DATA_DIR:?}/caddy/data:/data
+      - ${DATA_DIR:?}/caddy/config:/config
     logging:
       driver: json-file
       options: { max-size: "20m", max-file: "5" }
